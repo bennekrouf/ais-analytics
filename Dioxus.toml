@@ -1,0 +1,12 @@
+[application]
+name = "ais-analytics"
+default_platform = "desktop"
+
+[desktop]
+title = "AIS Analytics"
+
+[bundle]
+identifier = "com.ais-analytics.app"
+
+[web.app]
+title = "AIS Analytics"

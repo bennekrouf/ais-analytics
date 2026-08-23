@@ -1,0 +1,586 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.2.0) — empty = auto-bump patch'
+        required: false
+        default: ''
+      bump:
+        description: 'Bump type if version is empty'
+        required: false
+        default: 'patch'
+        type: choice
+        options: [patch, minor, major]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Bump version and tag
+        id: bump
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+          BUMP_TYPE: ${{ inputs.bump }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
+        run: |
+          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          if [[ -n "$VERSION_INPUT" ]]; then
+            NEW="$VERSION_INPUT"
+          elif [[ "$BUMP_TYPE" == "major" ]]; then
+            NEW="$((MAJOR+1)).0.0"
+          elif [[ "$BUMP_TYPE" == "minor" ]]; then
+            NEW="$MAJOR.$((MINOR+1)).0"
+          else
+            NEW="$MAJOR.$MINOR.$((PATCH+1))"
+          fi
+
+          TAG="v$NEW"
+          sed -i "s/^version = \"$CURRENT\"/version = \"$NEW\"/" Cargo.toml
+          git add Cargo.toml
+          git commit -m "chore: release $TAG"
+          git tag "$TAG"
+          git push origin HEAD
+          git push origin "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  build-mac:
+    needs: [prepare]
+    if: always() && !failure() && !cancelled()
+    runs-on: macos-latest
+    env:
+      SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+      APP_STORE_KEY:        ${{ secrets.APP_STORE_CONNECT_KEY }}
+      APP_STORE_KEY_ID:     ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      APP_STORE_ISSUER_ID:  ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-macos-arm64-cargo-${{ hashFiles('Cargo.lock') }}
+
+      # ── Sanity-check required signing secrets up front ─────────────────────
+      # Signing needs all seven secrets. With none of them configured the
+      # sensible outcome is "no macOS build in this release", not "no release
+      # at all" — Windows and Linux are unaffected and still ship. A partial
+      # set is a genuine misconfiguration and still fails loudly.
+      - name: Check macOS signing secrets
+        env:
+          MACOS_CERTIFICATE:     ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PASSWORD:     ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          missing=()
+          [ -z "${SIGNING_IDENTITY:-}"      ] && missing+=("MACOS_SIGNING_IDENTITY")
+          [ -z "${APP_STORE_KEY:-}"        ] && missing+=("APP_STORE_CONNECT_KEY")
+          [ -z "${APP_STORE_KEY_ID:-}"     ] && missing+=("APP_STORE_CONNECT_KEY_ID")
+          [ -z "${APP_STORE_ISSUER_ID:-}"  ] && missing+=("APP_STORE_CONNECT_ISSUER_ID")
+          [ -z "${MACOS_CERTIFICATE:-}"     ] && missing+=("MACOS_CERTIFICATE")
+          [ -z "${MACOS_CERTIFICATE_PWD:-}" ] && missing+=("MACOS_CERTIFICATE_PWD")
+          [ -z "${KEYCHAIN_PASSWORD:-}"     ] && missing+=("KEYCHAIN_PASSWORD")
+
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "All 7 macOS signing secrets present."
+            echo "HAVE_MAC_SECRETS=true" >> "$GITHUB_ENV"
+          elif [ ${#missing[@]} -eq 7 ]; then
+            echo "::warning::No macOS signing secrets configured — skipping the macOS build. \
+          This release will ship Windows and Linux only. Add the 7 secrets in \
+          Settings → Secrets and variables → Actions to include a signed .dmg."
+            echo "HAVE_MAC_SECRETS=false" >> "$GITHUB_ENV"
+          else
+            echo "::error::Incomplete macOS signing configuration. Missing: ${missing[*]}"
+            echo "Set all seven, or none at all to skip the macOS build."
+            exit 1
+          fi
+
+      # ── Import Developer ID cert into a temporary keychain ─────────────────
+      - name: Set up signing keychain
+        if: env.HAVE_MAC_SECRETS == 'true'
+        env:
+          MACOS_CERTIFICATE:     ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PASSWORD:     ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+
+          security create-keychain  -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$MACOS_CERTIFICATE_PWD" \
+            -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          rm "$RUNNER_TEMP/cert.p12"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Build
+        if: env.HAVE_MAC_SECRETS == 'true'
+        run: cargo build --release --target aarch64-apple-darwin
+
+      # ── Sign the binary with hardened runtime + webview entitlements ───────
+      - name: Codesign binary
+        if: env.HAVE_MAC_SECRETS == 'true'
+        run: |
+          set -euo pipefail
+          BIN=target/aarch64-apple-darwin/release/ais-analytics
+          codesign --force --options runtime --timestamp \
+            --entitlements .github/macos-entitlements.plist \
+            --sign "$SIGNING_IDENTITY" \
+            "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+
+      # ── Generate icon.icns from assets/icon.png (1024x1024 source) ─────────
+      # No-op if the PNG is absent; bundle just ships icon-less in that case.
+      - name: Generate macOS .icns
+        if: env.HAVE_MAC_SECRETS == 'true'
+        run: |
+          set -euo pipefail
+          if [ ! -f assets/icon.png ]; then
+            echo "::warning::assets/icon.png not found — .app will ship without an icon."
+            exit 0
+          fi
+          ICONSET="$RUNNER_TEMP/icon.iconset"
+          mkdir -p "$ICONSET"
+          for size in 16 32 64 128 256 512 1024; do
+            sips -z $size $size assets/icon.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+          done
+          # Retina (@2x) variants — Apple expects these for crisp scaling.
+          cp "$ICONSET/icon_32x32.png"     "$ICONSET/icon_16x16@2x.png"
+          cp "$ICONSET/icon_64x64.png"     "$ICONSET/icon_32x32@2x.png"
+          cp "$ICONSET/icon_256x256.png"   "$ICONSET/icon_128x128@2x.png"
+          cp "$ICONSET/icon_512x512.png"   "$ICONSET/icon_256x256@2x.png"
+          cp "$ICONSET/icon_1024x1024.png" "$ICONSET/icon_512x512@2x.png"
+          rm "$ICONSET/icon_64x64.png" "$ICONSET/icon_1024x1024.png"
+          mkdir -p dist
+          iconutil -c icns "$ICONSET" -o dist/icon.icns
+
+      # ── Wrap binary in .app bundle, build signed + notarized + stapled DMG ─
+      - name: Build .app + .dmg
+        if: env.HAVE_MAC_SECRETS == 'true'
+        run: |
+          set -euo pipefail
+          BIN=target/aarch64-apple-darwin/release/ais-analytics
+          VER="${GITHUB_REF_NAME#v}"
+          APP="dist/AIS Analytics.app"
+
+          # 1. Construct the .app bundle around the cargo-built binary.
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp "$BIN" "$APP/Contents/MacOS/ais-analytics"
+          chmod +x "$APP/Contents/MacOS/ais-analytics"
+
+          ICON_KEY=""
+          if [ -f dist/icon.icns ]; then
+            cp dist/icon.icns "$APP/Contents/Resources/icon.icns"
+            ICON_KEY="<key>CFBundleIconFile</key><string>icon</string>"
+          fi
+
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>ais-analytics</string>
+            <key>CFBundleIdentifier</key><string>com.ais-analytics.app</string>
+            <key>CFBundleName</key><string>AIS Analytics</string>
+            <key>CFBundleDisplayName</key><string>AIS Analytics</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$VER</string>
+            <key>CFBundleVersion</key><string>$VER</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+            $ICON_KEY
+          </dict></plist>
+          EOF
+
+          # 2. Re-sign the .app (sign nested binary first via --deep).
+          codesign --force --options runtime --timestamp \
+            --entitlements .github/macos-entitlements.plist \
+            --sign "$SIGNING_IDENTITY" \
+            --deep "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+
+          # 3. Stage and create .dmg.
+          mkdir -p dmg-staging
+          cp -R "$APP" dmg-staging/
+          ln -s /Applications dmg-staging/Applications
+          hdiutil create -volname "AIS Analytics" -srcfolder dmg-staging \
+            -ov -format UDZO dist/ais-analytics-macos-arm64.dmg
+          codesign --force --timestamp --sign "$SIGNING_IDENTITY" \
+            dist/ais-analytics-macos-arm64.dmg
+
+          # 4. Notarize the DMG (covers the binary inside via hash) and staple.
+          P8="$RUNNER_TEMP/AuthKey_${APP_STORE_KEY_ID}.p8"
+          echo "$APP_STORE_KEY" | base64 --decode > "$P8"
+
+          xcrun notarytool submit dist/ais-analytics-macos-arm64.dmg \
+            --key "$P8" \
+            --key-id "$APP_STORE_KEY_ID" \
+            --issuer "$APP_STORE_ISSUER_ID" \
+            --wait
+          xcrun stapler staple dist/ais-analytics-macos-arm64.dmg
+          xcrun stapler validate dist/ais-analytics-macos-arm64.dmg
+
+          shasum -a 256 dist/ais-analytics-macos-arm64.dmg \
+            > dist/ais-analytics-macos-arm64.dmg.sha256
+
+      - name: Clean up keychain
+        if: always() && env.HAVE_MAC_SECRETS == 'true'
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" || true
+
+      - name: Upload artifact
+        if: env.HAVE_MAC_SECRETS == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ais-analytics-macos-arm64
+          path: |
+            dist/ais-analytics-macos-arm64.dmg
+            dist/ais-analytics-macos-arm64.dmg.sha256
+
+  build-windows:
+    needs: [prepare]
+    if: always() && !failure() && !cancelled()
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-windows-cargo-${{ hashFiles('Cargo.lock') }}
+
+      # ── Generate assets/icon.ico from assets/icon.png (ImageMagick is
+      # preinstalled on windows-latest as `magick`). No-op if PNG missing;
+      # build.rs already handles that case with a cargo:warning.
+      - name: Generate Windows .ico
+        shell: pwsh
+        run: |
+          if (Test-Path assets/icon.png) {
+            magick assets/icon.png -define icon:auto-resize=16,24,32,48,64,128,256 assets/icon.ico
+          } else {
+            Write-Host "::warning::assets/icon.png not found — .exe will ship without an embedded icon."
+          }
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Copy WebView2Loader.dll
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem "target\release\build\webview2-com-sys-*\out\x64\WebView2Loader.dll" | Select-Object -First 1
+          if ($dll) { Copy-Item $dll.FullName "target\release\WebView2Loader.dll" -Force }
+          else { Write-Error "WebView2Loader.dll not found in build output" }
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { Write-Error "ISCC.exe not found" }
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          & $iscc /DMyAppVersion=$version installer\installer.iss
+          # Inno emits a versionless filename so the "/releases/latest/download/"
+          # URL is stable across releases. Version info still lives inside the .exe
+          # (properties + wizard) and in the app's own title bar.
+          $exe = "ais-analytics-setup.exe"
+          $hash = (Get-FileHash "dist\$exe" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $exe" | Out-File "dist\$exe.sha256" -Encoding ASCII
+          Write-Host "Installer: dist\$exe ($([math]::Round((Get-Item dist\$exe).Length/1MB,1)) MB)"
+
+      # ── SignPath Foundation: code-sign the .exe for free (OSS only) ────────
+      # Uncomment this block after SignPath Foundation has approved the project.
+      # Until then the .exe ships unsigned (SmartScreen will warn on download).
+      #
+      # Setup (one-time, after SignPath approval):
+      #   1. Add repo secret `SIGNPATH_API_TOKEN` (from SignPath dashboard).
+      #   2. Fill the three placeholders below with values from your
+      #      SignPath project page (organization-id, project-slug, policy-slug).
+      #
+      # - name: Upload unsigned artifact to GitHub
+      #   id: upload-unsigned
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: ais-analytics-windows-unsigned
+      #     path: dist/ais-analytics-setup.exe
+      #
+      # - name: Submit signing request to SignPath
+      #   uses: signpath/github-action-submit-signing-request@v1
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: 'REPLACE-WITH-SIGNPATH-ORG-UUID'
+      #     project-slug:    'REPLACE-WITH-SIGNPATH-PROJECT-SLUG'
+      #     signing-policy-slug: 'REPLACE-WITH-SIGNPATH-POLICY-SLUG'
+      #     github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: dist-signed
+      #
+      # - name: Replace .exe with the signed version
+      #   shell: pwsh
+      #   run: |
+      #     Move-Item -Force dist-signed\ais-analytics-setup.exe dist\ais-analytics-setup.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ais-analytics-windows
+          path: |
+            dist\ais-analytics-setup.exe
+            dist\ais-analytics-setup.exe.sha256
+
+  build-linux:
+    needs: [prepare]
+    if: always() && !failure() && !cancelled()
+    runs-on: ubuntu-latest
+
+    # x86_64 only — cross-compiling GTK/WebKit for ARM64 Linux requires a full
+    # ARM64 sysroot which is impractical on ubuntu-latest runners.
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-linux-x86_64-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            pkg-config
+
+      - name: Build
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Package tar.gz
+        run: |
+          NAME="ais-analytics-linux-x86_64"
+          DIST="dist/$NAME"
+          mkdir -p "$DIST"
+          cp target/x86_64-unknown-linux-gnu/release/ais-analytics "$DIST/"
+          cp scripts/setup-linux.sh "$DIST/"
+          chmod +x "$DIST/setup-linux.sh"
+          # Bundle the icon so setup-linux.sh can register it with the
+          # hicolor theme and the .desktop entry shows branding instead
+          # of the generic terminal glyph. No-op if PNG is missing.
+          if [ -f assets/icon.png ]; then
+            cp assets/icon.png "$DIST/icon.png"
+          else
+            echo "::warning::assets/icon.png not found — Linux tarball will ship without an icon."
+          fi
+          tar -czf "$NAME.tar.gz" -C dist "$NAME"
+          sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ais-analytics-linux-x86_64
+          path: |
+            ais-analytics-linux-x86_64.tar.gz
+            ais-analytics-linux-x86_64.tar.gz.sha256
+
+  release:
+    needs: [build-mac, build-windows, build-linux]
+    # Publish whatever built. A platform that failed must not take the others
+    # down with it — that is how three green artifacts ended up unreleased.
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts + generate latest.json
+        id: stage
+        env:
+          REPO: ${{ github.repository }}
+          TAG:  ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \; 2>/dev/null || true
+          ls -lh release/ || true
+
+          MAC_DMG="ais-analytics-macos-arm64.dmg"
+          WIN_EXE="ais-analytics-setup.exe"
+          LINUX_TGZ="ais-analytics-linux-x86_64.tar.gz"
+
+          have() { [ -f "release/$1" ] && echo true || echo false; }
+          HAVE_MAC=$(have "$MAC_DMG")
+          HAVE_WIN=$(have "$WIN_EXE")
+          HAVE_LINUX=$(have "$LINUX_TGZ")
+
+          # Nothing at all means every build failed; a release with no
+          # downloads is worse than a red run, so stop here.
+          if [ "$HAVE_MAC" = false ] && [ "$HAVE_WIN" = false ] && [ "$HAVE_LINUX" = false ]; then
+            echo "::error::No platform artifacts were produced — nothing to release."
+            exit 1
+          fi
+
+          {
+            echo "have_mac=$HAVE_MAC"
+            echo "have_win=$HAVE_WIN"
+            echo "have_linux=$HAVE_LINUX"
+          } >> "$GITHUB_OUTPUT"
+
+          VER="${TAG#v}"
+          BASE="https://github.com/$REPO/releases/download/$TAG"
+          # An absent platform gets empty url and sha rather than a link that
+          # 404s — a consumer must be able to tell "not built" from "here".
+          sha() { [ -f "release/$1" ] && sha256sum "release/$1" | awk '{print $1}' || echo ""; }
+          url() { [ -f "release/$1" ] && echo "$BASE/$1" || echo ""; }
+
+          cat > release/latest.json <<EOF
+          {
+            "name": "ais-analytics",
+            "version": "$VER",
+            "tag": "$TAG",
+            "released_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "macos":   { "dmg":    { "url": "$(url "$MAC_DMG")",   "sha256": "$(sha "$MAC_DMG")"   } },
+              "windows": { "exe_or_msi": { "url": "$(url "$WIN_EXE")", "sha256": "$(sha "$WIN_EXE")" } },
+              "linux":   { "tarball": { "url": "$(url "$LINUX_TGZ")", "sha256": "$(sha "$LINUX_TGZ")" } }
+            }
+          }
+          EOF
+          cp release/latest.json artifacts/
+          cat release/latest.json
+
+      # Notes list only the platforms actually present, so nobody is sent to a
+      # download link that 404s.
+      - name: Compose release notes
+        env:
+          REPO: ${{ github.repository }}
+          TAG:  ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Desktop app"
+            echo
+
+            if [ "${{ steps.stage.outputs.have_mac }}" = "true" ]; then
+              echo "### macOS (Apple Silicon)"
+              echo "Download \`ais-analytics-macos-arm64.dmg\`, open it, and drag AIS Analytics to /Applications."
+              echo "Signed with Apple Developer ID and notarized — opens with a normal double-click."
+              echo
+            fi
+
+            if [ "${{ steps.stage.outputs.have_win }}" = "true" ]; then
+              echo "### Windows"
+              echo "Download and run:"
+              echo "\`https://github.com/$REPO/releases/latest/download/ais-analytics-setup.exe\`"
+              echo
+              echo "The installer isn't code-signed yet — SmartScreen will warn; choose **More info → Run anyway**."
+              echo
+            fi
+
+            if [ "${{ steps.stage.outputs.have_linux }}" = "true" ]; then
+              echo "### Linux (x86_64)"
+              echo '```bash'
+              echo "curl -L https://github.com/$REPO/releases/download/$TAG/ais-analytics-linux-x86_64.tar.gz | tar xz"
+              echo "cd ais-analytics-linux-x86_64"
+              echo "sudo ./setup-linux.sh && ./ais-analytics"
+              echo '```'
+              echo
+            fi
+
+            if [ "${{ steps.stage.outputs.have_mac }}" != "true" ]; then
+              echo "> macOS build not included in this release."
+              echo
+            fi
+
+            echo "## First run"
+            echo
+            echo "ais-analytics reads your existing Azure CLI session — no separate sign-in:"
+            echo
+            echo '```'
+            echo "az login"
+            echo '```'
+            echo
+            echo "Then pick a Log Analytics workspace. It reads the published schema and"
+            echo "samples the tables with data, to work out which column correlates a flow."
+          } > notes.md
+          cat notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          FILES=$(find artifacts -type f | tr '\n' ' ')
+
+          # `--latest` forces this release to be flagged "Latest" in the GitHub
+          # UI and via the `/releases/latest` API, so the stable download URLs
+          # keep resolving.
+          gh release create "$TAG" \
+            --latest \
+            --title "ais-analytics $TAG" \
+            --notes-file notes.md \
+            $FILES

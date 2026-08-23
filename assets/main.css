@@ -1,0 +1,934 @@
+/* ══════════════════════════════════════════════
+   CSS VARIABLES — dark (default) / light
+
+   Mood: warm amber. Tracing is following a thread backwards through
+   time, so the surfaces are warm-brown and the accent is amber rather
+   than blue. Structure is shared with ais-monitor and ais-runner;
+   only these values differ between the three apps.
+══════════════════════════════════════════════ */
+:root {
+    --bg0:        #1a1410;
+    --bg1:        #241c15;
+    --bg2:        #33281e;
+    --bg3:        #2b2119;
+    --border:     #4a3d2f;
+    --border2:    #33281e;
+    --text1:      #f5e6d3;
+    --text2:      #b8a894;
+    --text3:      #8b7d70;
+    --green:      #6fce7c;
+    --green-bg:   #3f8f4a;
+    --red:        #ff7d7d;
+    --red-bg:     #c94040;
+    --blue:       #ffa726;
+    --blue-bg:    #b06f00;
+    --yellow:     #f0b960;
+}
+
+body.light {
+    --bg0:        #fffbf5;
+    --bg1:        #f7eee1;
+    --bg2:        #efe3d2;
+    --bg3:        #e6d8c4;
+    --border:     #d8c7ae;
+    --border2:    #efe3d2;
+    --text1:      #4a3826;
+    --text2:      #6d5842;
+    --text3:      #9a8672;
+    --green:      #3f7a2f;
+    --green-bg:   #386e2a;
+    --red:        #c04040;
+    --red-bg:     #a83636;
+    --blue:       #a35a00;
+    --blue-bg:    #8f4f00;
+    --yellow:     #8a6510;
+}
+
+/* ── Base reset ───────────────────────────────────────────────────── */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: 'SF Mono', 'Menlo', 'Monaco', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 13px;
+    background: var(--bg0);
+    color: var(--text1);
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* ══════════════════════════════════════════════
+   WELCOME SCREEN
+══════════════════════════════════════════════ */
+.welcome {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 40px;
+    background: var(--bg0);
+}
+
+.welcome-card { width: 520px; text-align: center; }
+
+.welcome-card h1 {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--blue);
+    letter-spacing: -0.5px;
+}
+
+.welcome-card .subtitle {
+    margin-top: 8px;
+    font-size: 14px;
+    color: var(--text2);
+    margin-bottom: 28px;
+}
+
+.welcome-box {
+    background: var(--bg1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    text-align: center;
+}
+
+.welcome-pick {
+    padding: 28px 32px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    border-bottom: 1px solid var(--border);
+}
+
+.az-status { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text1); }
+
+.az-form {
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.az-field { display: flex; flex-direction: column; gap: 4px; text-align: left; }
+.az-field label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.az-field select {
+    font-family: inherit;
+    font-size: 13px;
+    padding: 8px 12px;
+    background: var(--bg0);
+    color: var(--text1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    width: 100%;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23b8a894' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 28px;
+}
+.az-field select:focus { outline: none; border-color: var(--blue); }
+.az-field select option { background: var(--bg1); }
+
+.az-loading { font-size: 12px; color: var(--text3); padding: 8px 0; font-style: italic; }
+.az-hint {
+    font-size: 12px;
+    color: var(--yellow);
+    padding: 6px 10px;
+    background: rgba(240,185,96,0.08);
+    border-radius: 6px;
+}
+.az-error {
+    color: var(--red);
+    font-size: 12px;
+    padding: 8px 12px;
+    background: rgba(255,125,125,0.08);
+    border-radius: 6px;
+    text-align: left;
+}
+
+.az-form-actions { display: flex; gap: 8px; justify-content: flex-end; padding-top: 4px; }
+
+/* ── Recently opened accounts (ais-monitor's profile list) ────────── */
+.profile-section {
+    padding: 16px 24px;
+    text-align: left;
+    border-top: 1px solid var(--border);
+}
+.profile-section h3 {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 10px;
+}
+.profile-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+}
+.profile-item:hover { background: var(--bg2); }
+.profile-main { flex: 1; min-width: 0; }
+.profile-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text1);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.profile-sub {
+    font-size: 11px;
+    color: var(--text2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.profile-actions { display: flex; gap: 4px; flex-shrink: 0; }
+
+.btn-small { font-size: 12px; padding: 3px 10px; }
+.btn-open { color: var(--blue); border-color: var(--blue); font-weight: 600; }
+.btn-open:hover { background: var(--blue-bg); color: #fff; border-color: var(--blue-bg); }
+.btn-open:disabled { opacity: 0.45; }
+
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.dot.ok    { background: var(--green); }
+.dot.warn  { background: var(--yellow); }
+.dot.error { background: var(--red); }
+.dot.pulse { background: var(--blue); animation: pulse 1.2s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* ── Buttons ──────────────────────────────────────────────────────── */
+.btn {
+    font-family: inherit;
+    font-size: 12px;
+    padding: 5px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    background: var(--bg2);
+    color: var(--text2);
+    transition: color 0.15s, background 0.12s, border-color 0.12s;
+}
+.btn:hover { color: var(--text1); background: var(--bg3); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+.btn-primary {
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 600;
+    padding: 10px 28px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    background: var(--blue-bg);
+    color: #fff;
+    transition: opacity 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+.btn-primary:hover { opacity: 0.85; }
+.btn-primary:disabled { opacity: 0.5; cursor: default; }
+
+.btn-back {
+    font-family: inherit;
+    font-size: 13px;
+    padding: 4px 10px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    background: var(--bg2);
+    color: var(--text2);
+    transition: color 0.15s, border-color 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+}
+.btn-back:hover { color: var(--text1); border-color: var(--text2); }
+
+.btn-theme {
+    font-size: 16px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: background 0.12s;
+    flex-shrink: 0;
+}
+.btn-theme:hover { background: var(--bg2); }
+
+/* ══════════════════════════════════════════════
+   MAIN SCREEN (schema scan)
+══════════════════════════════════════════════ */
+/* Header pinned above a scrolling body, so the tabs stay put. */
+.app-shell { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+/* The detail panel is a flex sibling rather than an overlay, so opening it
+   narrows the main column instead of covering it. */
+.screen-split { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+
+.main-screen {
+    flex: 1 1 auto;
+    /* Without this a flex item refuses to shrink below its content width,
+       and the timeline would push the panel off-screen. */
+    min-width: 0;
+    overflow-y: auto;
+    padding: 24px 32px;
+}
+
+.topbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 12px;
+    background: var(--bg1);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    min-height: 40px;
+}
+.topbar h1 { font-size: 15px; font-weight: 700; color: var(--blue); }
+.topbar .account-tag {
+    font-size: 11px;
+    color: var(--text2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 320px;
+}
+.spacer { flex: 1; min-width: 0; }
+
+/* The read window. Sits in the toolbar rather than in Setup because it is not
+   a preference — every query is bounded by it, so it is part of reading the
+   workspace at all, and changing it rescans. */
+.range-picker {
+    font-family: inherit;
+    font-size: 11px;
+    padding: 5px 24px 5px 9px;
+    background: var(--bg0);
+    color: var(--text2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23b8a894' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 7px center;
+    white-space: nowrap;
+}
+.range-picker:hover { border-color: var(--text3); }
+.range-picker:focus { outline: none; border-color: var(--blue); }
+.range-picker option { background: var(--bg1); color: var(--text1); }
+
+/* Provenance of what's on screen: cached, refreshing, or freshly sampled. */
+.scan-state {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--text3);
+    white-space: nowrap;
+}
+.scan-state.stale { color: var(--yellow); cursor: help; }
+
+/* Segmented icon tabs, same convention as ais-monitor: the glyph carries the
+   meaning and `title` carries the name. */
+.topbar-tabs {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: 12px;
+    flex-shrink: 0;
+}
+.topbar-group {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+.topbar-tab {
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 4px 10px;
+    min-width: 34px;
+    border: none;
+    background: transparent;
+    color: var(--text2);
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+.topbar-tab.topbar-tab-text { font-size: 12px; padding: 4px 12px; }
+.topbar-tab + .topbar-tab { border-left: 1px solid var(--border); }
+.topbar-tab:hover { background: var(--bg2); color: var(--text1); }
+.topbar-tab.active { background: var(--blue-bg); color: #fff; }
+
+/* ── Collapsible container list ───────────────────────────────────── */
+.container-list { margin-top: 4px; }
+.container-row { border-top: 1px solid var(--border2); }
+.container-row:first-child { border-top: none; }
+
+.container-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 2px;
+    cursor: pointer;
+    user-select: none;
+}
+.container-head:hover { background: var(--bg2); }
+.container-head .caret {
+    color: var(--text3);
+    font-size: 10px;
+    width: 12px;
+    flex-shrink: 0;
+}
+.container-row.open .caret { color: var(--blue); }
+.container-name { font-size: 12px; color: var(--text1); }
+.container-meta { font-size: 10px; color: var(--text3); white-space: nowrap; }
+.container-row .schema-table { margin: 4px 0 14px 20px; width: calc(100% - 20px); }
+
+.panel {
+    background: var(--bg1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 14px;
+}
+.panel h3 { font-size: 13px; color: var(--text1); margin-bottom: 4px; }
+.panel .meta { font-size: 11px; color: var(--text2); margin-bottom: 10px; }
+
+table.schema-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.schema-table th {
+    text-align: left;
+    color: var(--text2);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 10px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+}
+table.schema-table td {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border2);
+    color: var(--text1);
+}
+table.schema-table tr:hover td { background: var(--bg2); }
+
+/* ── Correlation key picker ───────────────────────────────────────── */
+.panel-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 4px;
+}
+.panel-head h3 { margin-bottom: 0; }
+
+.key-panel { border-color: var(--blue); }
+
+.role-grid {
+    margin-top: 12px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+}
+.role-grid .az-field label { margin-bottom: 2px; }
+
+.evidence { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+
+/* Axis switcher, sitting on the header of the thing it re-axes. */
+.rows-pick {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.rows-pick select {
+    font-family: inherit;
+    font-size: 11px;
+    text-transform: none;
+    letter-spacing: 0;
+    padding: 2px 6px;
+    background: var(--bg2);
+    color: var(--text1);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    cursor: pointer;
+}
+.rows-pick select:hover { border-color: var(--blue); }
+.rows-pick select:focus { outline: none; border-color: var(--blue); }
+
+.key-summary { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+.key-summary p { font-size: 12px; color: var(--text1); display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.key-summary code {
+    font-family: inherit;
+    color: var(--blue);
+    background: rgba(255,167,38,0.10);
+    padding: 1px 6px;
+    border-radius: 4px;
+}
+.key-summary .meta { display: block; color: var(--text3); }
+
+.chip {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+.chip.ok    { color: var(--green); background: rgba(111,206,124,0.12); }
+.chip.warn  { color: var(--yellow); background: rgba(240,185,96,0.12); }
+.chip.bad   { color: var(--red); background: rgba(255,125,125,0.14); }
+.chip.muted { color: var(--text3); background: var(--bg2); }
+.evidence .chip { font-weight: 500; letter-spacing: 0; text-transform: none; }
+
+/* ══════════════════════════════════════════════
+   TRACE VIEW — one key value, one lane per container
+   Layout is computed in Rust; positions arrive as inline px.
+══════════════════════════════════════════════ */
+.follow-panel .follow-row { display: flex; align-items: flex-end; gap: 12px; }
+.follow-panel .az-field { flex: 1; max-width: 520px; }
+.follow-panel input {
+    font-family: inherit;
+    font-size: 13px;
+    padding: 8px 12px;
+    background: var(--bg0);
+    color: var(--text1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    width: 100%;
+}
+.follow-panel input:focus { outline: none; border-color: var(--blue); }
+.follow-panel .btn-primary { font-size: 13px; padding: 9px 20px; }
+
+/* Type-ahead over correlation values. Sits directly under the input so the
+   results appear where you're already looking. */
+.suggest-list {
+    margin-top: 4px;
+    max-height: 190px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg0);
+    display: flex;
+    flex-direction: column;
+}
+.suggest-row {
+    font-family: inherit;
+    font-size: 12px;
+    text-align: left;
+    padding: 6px 10px;
+    border: none;
+    border-bottom: 1px solid var(--border2);
+    background: none;
+    color: var(--text1);
+    cursor: pointer;
+    word-break: break-all;
+}
+.suggest-row:last-child { border-bottom: none; }
+.suggest-row:hover { background: var(--bg2); color: var(--blue); }
+.suggest-empty { padding: 6px 10px; font-size: 11px; color: var(--text3); font-style: italic; }
+
+/* Recently traced values. Ids are unmemorable and unretypeable, so getting
+   back to one has to be a single click. */
+.recent-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border2);
+}
+.recent-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-right: 2px;
+}
+.recent-chip {
+    font-family: inherit;
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg2);
+    color: var(--text2);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+.recent-chip:hover { color: var(--blue); border-color: var(--blue); background: var(--bg3); }
+.recent-chip:disabled { opacity: 0.5; cursor: default; }
+.recent-clear {
+    font-family: inherit;
+    font-size: 10px;
+    padding: 3px 8px;
+    border: none;
+    background: none;
+    color: var(--text3);
+    cursor: pointer;
+}
+.recent-clear:hover { color: var(--red); }
+
+.trace-panel { border-color: var(--blue); }
+
+/* Fragment search hit several ids — choose before drawing anything. */
+.match-list {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    max-height: 260px;
+    overflow-y: auto;
+}
+.match-row {
+    font-family: inherit;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    text-align: left;
+    padding: 8px 12px;
+    border: none;
+    border-bottom: 1px solid var(--border2);
+    background: none;
+    cursor: pointer;
+}
+.match-row:last-child { border-bottom: none; }
+.match-row:hover { background: var(--bg2); }
+.match-value { font-size: 12px; color: var(--blue); word-break: break-all; }
+.match-count { font-size: 10px; color: var(--text3); white-space: nowrap; }
+.trace-scroll { overflow-x: auto; overflow-y: hidden; margin-top: 12px; padding-bottom: 6px; }
+.trace-track { position: relative; }
+
+.trace-axis { position: relative; height: 20px; margin-left: 190px; }
+.trace-axis .tick {
+    position: absolute;
+    font-size: 10px;
+    color: var(--text3);
+    white-space: nowrap;
+    border-left: 1px solid var(--border);
+    padding-left: 4px;
+    height: 14px;
+}
+
+.lane { display: flex; align-items: stretch; border-top: 1px solid var(--border2); min-height: 72px; }
+.lane-head {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    width: 190px;
+    flex: 0 0 190px;
+    background: var(--bg1);
+    border-right: 1px solid var(--border);
+    padding: 10px 12px 10px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.lane-name { font-size: 12px; color: var(--text1); }
+.lane-field { font-size: 10px; color: var(--text3); }
+.lane-gap { font-size: 10px; color: var(--blue); }
+
+.lane-body { position: relative; flex: 1; }
+
+.lane.awaiting { background: repeating-linear-gradient(
+    45deg, transparent, transparent 6px, rgba(240,185,96,0.045) 6px, rgba(240,185,96,0.045) 12px); }
+.lane.awaiting .lane-name { color: var(--yellow); }
+.lane.failed .lane-name { color: var(--red); }
+
+.lane-note {
+    position: absolute;
+    left: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 11px;
+    font-style: italic;
+    color: var(--text3);
+}
+.lane-note.error { color: var(--red); font-style: normal; }
+
+.block {
+    position: absolute;
+    top: 8px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--green);
+    border-radius: 6px;
+    padding: 6px 8px;
+    overflow: hidden;
+}
+.block-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text1);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.block-time { font-size: 9px; color: var(--text3); margin-bottom: 2px; }
+.block-fact {
+    font-size: 9px;
+    display: flex;
+    gap: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+}
+.block-fact .fact-name { color: var(--text3); }
+.block-fact .fact-value { color: var(--text2); text-overflow: ellipsis; overflow: hidden; }
+
+/* ── Error rules ──────────────────────────────────────────────────── */
+.rule-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+.rule-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    padding: 3px 4px 3px 10px;
+    border-radius: 10px;
+    border: 1px solid var(--red);
+    background: rgba(255,125,125,0.10);
+    color: var(--red);
+    white-space: nowrap;
+}
+.rule-drop {
+    font-family: inherit;
+    font-size: 10px;
+    line-height: 1;
+    padding: 2px 4px;
+    border: none;
+    border-radius: 8px;
+    background: none;
+    color: var(--red);
+    cursor: pointer;
+    opacity: 0.65;
+}
+.rule-drop:hover { opacity: 1; background: rgba(255,125,125,0.18); }
+
+.rule-form {
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.rule-form .az-field { flex: 1; min-width: 200px; }
+.rule-form input {
+    font-family: inherit;
+    font-size: 13px;
+    padding: 8px 12px;
+    background: var(--bg0);
+    color: var(--text1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    width: 100%;
+}
+.rule-form input:focus { outline: none; border-color: var(--blue); }
+/* Narrower and quieter than the value box — it filters the list below rather
+   than being part of the rule. */
+.rule-form .field-filter {
+    font-size: 11px;
+    padding: 4px 9px;
+    background: var(--bg1);
+    margin-bottom: 4px;
+}
+.rule-form .az-field > .meta { margin-top: 3px; font-size: 10px; color: var(--text3); }
+
+/* Results are always on screen, so typing in the filter visibly narrows them.
+   Capped height keeps a hundred fields from pushing the form off the page. */
+.field-list {
+    max-height: 168px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg0);
+    display: flex;
+    flex-direction: column;
+}
+.field-option {
+    font-family: inherit;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    text-align: left;
+    padding: 5px 10px;
+    border: none;
+    border-bottom: 1px solid var(--border2);
+    background: none;
+    cursor: pointer;
+}
+.field-option:last-child { border-bottom: none; }
+.field-option:hover { background: var(--bg2); }
+.field-option.on { background: var(--blue-bg); }
+.field-option.on .field-option-name,
+.field-option.on .field-option-note { color: #fff; }
+.field-option-name { font-size: 12px; color: var(--text1); }
+.field-option-note { font-size: 10px; color: var(--text3); white-space: nowrap; }
+.field-empty { padding: 8px 10px; font-size: 11px; color: var(--text3); font-style: italic; }
+
+.rule-observed {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+}
+.value-chip {
+    font-family: inherit;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg2);
+    color: var(--text2);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.value-chip:hover { color: var(--blue); border-color: var(--blue); }
+
+.block { cursor: pointer; transition: border-color 0.12s, background 0.12s; }
+.block:hover { background: var(--bg3); border-color: var(--text3); }
+.block.selected {
+    background: var(--bg3);
+    border-color: var(--blue);
+    border-left-color: var(--blue);
+    box-shadow: 0 0 0 1px var(--blue);
+}
+
+/* A failed step. The left accent carries the signal even when the card is
+   clipped at the edge of the scroll track. */
+.block.errored {
+    background: rgba(255,125,125,0.10);
+    border-color: var(--red);
+    border-left-color: var(--red);
+}
+.block.errored:hover { background: rgba(255,125,125,0.16); }
+.block.errored .block-label { color: var(--red); }
+/* Selection still has to win — you must be able to tell which red card is open. */
+.block.errored.selected {
+    background: rgba(255,125,125,0.16);
+    border-color: var(--blue);
+    box-shadow: 0 0 0 1px var(--blue);
+}
+
+/* ── Document detail panel ────────────────────────────────────────── */
+.doc-panel {
+    flex: 0 0 420px;
+    width: 420px;
+    /* Height comes from the flex row, which already sits below the header. */
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg1);
+    border-left: 1px solid var(--border);
+    padding: 20px 20px 12px;
+}
+.doc-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 2px;
+}
+.doc-head h3 {
+    font-size: 13px;
+    color: var(--text1);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.doc-head .btn { flex: 0 0 auto; padding: 3px 9px; }
+.doc-source { font-size: 11px; color: var(--text3); }
+
+.doc-body {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    margin-top: 10px;
+}
+.doc-body .doc-json { flex: 1; overflow: auto; }
+
+/* Quiet until you go looking for it, so it doesn't compete with the JSON. */
+.doc-copy {
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    font-family: inherit;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    padding: 3px 9px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: var(--bg2);
+    color: var(--text3);
+    cursor: pointer;
+    opacity: 0.55;
+    transition: opacity 0.12s, color 0.12s, border-color 0.12s, background 0.12s;
+}
+.doc-body:hover .doc-copy { opacity: 1; }
+.doc-copy:hover { color: var(--blue); border-color: var(--blue); }
+/* Confirmation reads as a state change on the control itself — no floating
+   bubble to chase, and it can't be missed by looking elsewhere. */
+.doc-copy.done {
+    opacity: 1;
+    color: var(--green);
+    border-color: var(--green);
+    background: rgba(63,185,80,0.12);
+}
+.doc-json {
+    font-family: inherit;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text1);
+    background: var(--bg0);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    /* Long values wrap rather than forcing the panel to scroll sideways. */
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.doc-foot { margin-top: 8px; color: var(--text3); }
+
+.off-path { margin-top: 12px; color: var(--text3); }
+.off-path code {
+    font-family: inherit;
+    color: var(--text2);
+    background: var(--bg2);
+    padding: 1px 5px;
+    border-radius: 4px;
+}
+
+table.schema-table tr.key-row td {
+    background: rgba(255,167,38,0.10);
+    color: var(--blue);
+    font-weight: 600;
+}
+table.schema-table tr.key-row:hover td { background: rgba(255,167,38,0.16); }
