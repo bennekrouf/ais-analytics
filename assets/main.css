@@ -450,6 +450,10 @@ table.schema-table tr:hover td { background: var(--bg2); }
     gap: 12px;
 }
 .role-grid .az-field label { margin-bottom: 2px; }
+/* Four lists on one panel, so each is shorter than the single list in the
+   error rules block — enough rows to browse, not enough to bury the evidence
+   summary underneath. */
+.role-grid .field-list { max-height: 136px; }
 
 .evidence { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
 
@@ -749,15 +753,23 @@ table.schema-table tr:hover td { background: var(--bg2); }
     width: 100%;
 }
 .rule-form input:focus { outline: none; border-color: var(--blue); }
-/* Narrower and quieter than the value box — it filters the list below rather
-   than being part of the rule. */
-.rule-form .field-filter {
+
+/* Narrower and quieter than a value box — it filters the list below rather
+   than being part of what you're building. Shared by every FieldPicker, so
+   the setup roles and the error rules read as one control. */
+.field-filter {
+    font-family: inherit;
     font-size: 11px;
     padding: 4px 9px;
     background: var(--bg1);
+    color: var(--text1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    width: 100%;
     margin-bottom: 4px;
 }
-.rule-form .az-field > .meta { margin-top: 3px; font-size: 10px; color: var(--text3); }
+.field-filter:focus { outline: none; border-color: var(--blue); }
+.az-field > .meta { margin-top: 3px; font-size: 10px; color: var(--text3); }
 
 /* Results are always on screen, so typing in the filter visibly narrows them.
    Capped height keeps a hundred fields from pushing the form off the page. */
@@ -784,6 +796,18 @@ table.schema-table tr:hover td { background: var(--bg2); }
     cursor: pointer;
 }
 .field-option:last-child { border-bottom: none; }
+/* The "no choice" row. Italic so it reads as the absence of a column rather
+   than as a column called "none", and sticky so clearing a selection never
+   depends on scrolling past a hundred candidates. */
+.field-option.none {
+    font-style: italic;
+    position: sticky;
+    top: 0;
+    background: var(--bg1);
+    z-index: 1;
+}
+.field-option.none .field-option-name { color: var(--text3); }
+.field-option.none.on .field-option-name { color: #fff; }
 .field-option:hover { background: var(--bg2); }
 .field-option.on { background: var(--blue-bg); }
 .field-option.on .field-option-name,

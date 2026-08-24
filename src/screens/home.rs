@@ -612,6 +612,113 @@ fn reconcile<'a>(selection: &mut Signal<String>, mut options: impl Iterator<Item
     }
 }
 
+/// One row of a `FieldPicker`.
+#[derive(Clone, PartialEq)]
+struct PickOption {
+    id: String,
+    label: String,
+    note: String,
+    /// Lowercased text the filter matches against. Built by the caller, so a
+    /// correlation key can be found by any of the names it goes by rather
+    /// than only the one it happens to be labelled with.
+    haystack: String,
+}
+
+/// Whether an option survives the current filter.
+///
+/// The chosen option always survives. If filtering could hide it, the
+/// selection would still be live while nothing on screen said so — the list
+/// would be quietly lying about what is selected.
+fn shows(option: &PickOption, needle: &str, selected: &str) -> bool {
+    needle.is_empty() || option.haystack.contains(needle) || option.id == selected
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct FieldPickerProps {
+    label: String,
+    /// The row shown for the empty selection — "none", or the default the
+    /// empty string stands for. `None` means this picker cannot be cleared.
+    none_label: Option<String>,
+    options: Vec<PickOption>,
+    selected: String,
+    filter_hint: String,
+    on_pick: EventHandler<String>,
+}
+
+/// A filterable list of columns.
+///
+/// A workspace presents far more columns than a dropdown can serve: the
+/// ranked lists here run to hundreds on anything with `AzureDiagnostics` in
+/// it, and scrolling an alphabetical menu to find a name you can already
+/// type is the wrong interaction.
+///
+/// An inline list rather than a native `select` for the reason the error
+/// rules block already found: a native select stays shut while you type in a
+/// separate box, so the filtering would be invisible at the moment it
+/// matters.
+#[component]
+fn FieldPicker(props: FieldPickerProps) -> Element {
+    let mut filter = use_signal(String::new);
+    let needle = filter.read().trim().to_lowercase();
+    let selected = props.selected.clone();
+
+    let matches: Vec<&PickOption> = props
+        .options
+        .iter()
+        .filter(|o| shows(o, &needle, &selected))
+        .collect();
+
+    let total = props.options.len();
+    let shown = matches.len();
+    let cleared = selected.is_empty();
+
+    rsx! {
+        div { class: "az-field",
+            label { "{props.label}" }
+            input {
+                class: "field-filter",
+                r#type: "text",
+                placeholder: "{props.filter_hint}",
+                value: "{filter}",
+                oninput: move |e| filter.set(e.value()),
+            }
+            div { class: "field-list",
+                // The "none" row is never filtered away: clearing a choice
+                // must not depend on what is typed in the filter.
+                if let Some(none_label) = props.none_label.clone() {
+                    button {
+                        class: if cleared { "field-option none on" } else { "field-option none" },
+                        onclick: move |_| props.on_pick.call(String::new()),
+                        span { class: "field-option-name", "{none_label}" }
+                    }
+                }
+                if matches.is_empty() {
+                    div { class: "field-empty", "no column matches “{needle}”" }
+                }
+                for o in matches.iter() {
+                    button {
+                        class: if selected == o.id { "field-option on" } else { "field-option" },
+                        title: "{o.label}",
+                        onclick: {
+                            let id = o.id.clone();
+                            move |_| props.on_pick.call(id.clone())
+                        },
+                        span { class: "field-option-name", "{o.label}" }
+                        span { class: "field-option-note", "{o.note}" }
+                    }
+                }
+            }
+            span { class: "meta",
+                if needle.is_empty() {
+                    "{total} options"
+                } else {
+                    "{shown} of {total}"
+                }
+            }
+        }
+    }
+}
+
 #[derive(Props, Clone, PartialEq)]
 struct TraceSetupProps {
     insights: discover::Insights,
@@ -633,7 +740,51 @@ struct TraceSetupProps {
 fn TraceSetup(props: TraceSetupProps) -> Element {
     let total = props.insights.tables.len();
     let key = props.trace_key.clone();
-    let no_key = key.is_none();
+
+    // A key group can span several spellings across several tables, and any
+    // one of them is a reasonable thing to search for — so all of them go
+    // into the haystack, not just the label the group ended up with.
+    let key_options: Vec<PickOption> = props
+        .insights
+        .keys
+        .iter()
+        .map(|c| {
+            let mut haystack = c.label.to_lowercase();
+            for b in &c.bindings {
+                haystack.push(' ');
+                haystack.push_str(&b.field.to_lowercase());
+                haystack.push(' ');
+                haystack.push_str(&b.table.to_lowercase());
+            }
+            PickOption {
+                id: c.id.clone(),
+                label: c.label.clone(),
+                note: format!(
+                    "{}/{} tables{}",
+                    c.bindings.len(),
+                    total,
+                    if c.shared_values > 0 { ", values match" } else { "" },
+                ),
+                haystack,
+            }
+        })
+        .collect();
+
+    let role_options = |candidates: &[discover::RoleCandidate]| -> Vec<PickOption> {
+        candidates
+            .iter()
+            .map(|c| PickOption {
+                // Role ids are already the lowercased column path, which is
+                // exactly what someone types to find one.
+                haystack: c.id.clone(),
+                id: c.id.clone(),
+                label: c.label.clone(),
+                note: c.note.clone(),
+            })
+            .collect()
+    };
+    let time_options = role_options(&props.insights.times);
+    let label_options = role_options(&props.insights.labels);
 
     rsx! {
         div { class: "panel key-panel",
@@ -643,74 +794,40 @@ fn TraceSetup(props: TraceSetupProps) -> Element {
             }
 
             div { class: "role-grid",
-                div { class: "az-field",
-                    label { "Correlation key — links the steps" }
-                    select {
-                        onchange: move |evt| props.on_key.call(evt.value()),
-                        option { value: "", selected: no_key, "-- choose a column --" }
-                        for c in props.insights.keys.iter() {
-                            option {
-                                value: "{c.id}",
-                                selected: key.as_ref().is_some_and(|k| k.id == c.id),
-                                {format!(
-                                    "{}  —  {}/{} tables{}",
-                                    c.label,
-                                    c.bindings.len(),
-                                    total,
-                                    if c.shared_values > 0 { ", values match" } else { "" },
-                                )}
-                            }
-                        }
-                    }
+                FieldPicker {
+                    label: "Correlation key — links the steps",
+                    none_label: Some("-- choose a column --".to_string()),
+                    options: key_options,
+                    selected: key.as_ref().map(|k| k.id.clone()).unwrap_or_default(),
+                    filter_hint: "filter… e.g. operation",
+                    on_pick: move |v: String| props.on_key.call(v),
                 }
 
-                div { class: "az-field",
-                    label { "Order by — sequences the steps" }
-                    select {
-                        onchange: move |evt| props.on_time.call(evt.value()),
-                        option { value: "", selected: props.time_id.is_empty(), "-- none --" }
-                        for c in props.insights.times.iter() {
-                            option {
-                                value: "{c.id}",
-                                selected: props.time_id == c.id,
-                                {format!("{}  —  {}", c.label, c.note)}
-                            }
-                        }
-                    }
+                FieldPicker {
+                    label: "Order by — sequences the steps",
+                    none_label: Some("-- none --".to_string()),
+                    options: time_options,
+                    selected: props.time_id.clone(),
+                    filter_hint: "filter… e.g. time",
+                    on_pick: move |v: String| props.on_time.call(v),
                 }
 
-                div { class: "az-field",
-                    label { "Rows (left index) — one lane per…" }
-                    select {
-                        onchange: move |evt| props.on_lane.call(evt.value()),
-                        option {
-                            value: "",
-                            selected: props.lane_id.is_empty(),
-                            "table (default)"
-                        }
-                        for c in props.insights.labels.iter() {
-                            option {
-                                value: "{c.id}",
-                                selected: props.lane_id == c.id,
-                                {format!("{}  —  {}", c.label, c.note)}
-                            }
-                        }
-                    }
+                FieldPicker {
+                    label: "Rows (left index) — one lane per…",
+                    none_label: Some("table (default)".to_string()),
+                    options: label_options.clone(),
+                    selected: props.lane_id.clone(),
+                    filter_hint: "filter… e.g. stage",
+                    on_pick: move |v: String| props.on_lane.call(v),
                 }
 
-                div { class: "az-field",
-                    label { "Step label — names each step" }
-                    select {
-                        onchange: move |evt| props.on_label.call(evt.value()),
-                        option { value: "", selected: props.label_id.is_empty(), "-- none --" }
-                        for c in props.insights.labels.iter() {
-                            option {
-                                value: "{c.id}",
-                                selected: props.label_id == c.id,
-                                {format!("{}  —  {}", c.label, c.note)}
-                            }
-                        }
-                    }
+                FieldPicker {
+                    label: "Step label — names each step",
+                    none_label: Some("-- none --".to_string()),
+                    options: label_options,
+                    selected: props.label_id.clone(),
+                    filter_hint: "filter… e.g. message",
+                    on_pick: move |v: String| props.on_label.call(v),
                 }
             }
 
@@ -972,22 +1089,18 @@ struct ErrorRulesProps {
 fn ErrorRules(props: ErrorRulesProps) -> Element {
     let mut field = use_signal(String::new);
     let mut value = use_signal(String::new);
-    let mut filter = use_signal(String::new);
 
     let chosen = field.read().clone();
 
-    // A busy workspace has hundreds of scalar columns — `AzureDiagnostics`
-    // alone carries more than the Cosmos version ever saw — which makes an
-    // alphabetical dropdown useless for finding one you can already name.
-    // Ids are stored lowercased, so the needle matches directly.
-    let needle = filter.read().trim().to_lowercase();
-    let matches: Vec<&discover::RoleCandidate> = props
+    let options: Vec<PickOption> = props
         .fields
         .iter()
-        // The chosen column always stays in the list: if filtering could drop
-        // it, the select would silently fall back to its first option and
-        // change the selection out from under the user.
-        .filter(|f| needle.is_empty() || f.id.contains(&needle) || f.id == chosen)
+        .map(|f| PickOption {
+            haystack: f.id.clone(),
+            id: f.id.clone(),
+            label: f.label.clone(),
+            note: f.note.clone(),
+        })
         .collect();
     // The values actually sampled for the chosen column, so the common case is
     // clicking one rather than remembering what the codes are.
@@ -1042,45 +1155,20 @@ fn ErrorRules(props: ErrorRulesProps) -> Element {
             }
 
             div { class: "rule-form",
-                div { class: "az-field",
-                    label { "Column" }
-                    input {
-                        class: "field-filter",
-                        r#type: "text",
-                        placeholder: "filter… e.g. resultcode",
-                        value: "{filter}",
-                        oninput: move |e| filter.set(e.value()),
-                    }
-                    // An inline list rather than a dropdown: a native select
-                    // stays shut while you type in a separate box, so the
-                    // filtering would be invisible at the moment it matters.
-                    div { class: "field-list",
-                        if matches.is_empty() {
-                            div { class: "field-empty", "no column matches “{needle}”" }
-                        }
-                        for f in matches.iter() {
-                            button {
-                                class: if chosen == f.id { "field-option on" } else { "field-option" },
-                                title: "{f.id}",
-                                onclick: {
-                                    let id = f.id.clone();
-                                    move |_| {
-                                        field.set(id.clone());
-                                        value.set(String::new());
-                                    }
-                                },
-                                span { class: "field-option-name", "{f.label}" }
-                                span { class: "field-option-note", "{f.note}" }
-                            }
-                        }
-                    }
-                    span { class: "meta",
-                        if needle.is_empty() {
-                            "{props.fields.len()} columns"
-                        } else {
-                            "{matches.len()} of {props.fields.len()} columns"
-                        }
-                    }
+                FieldPicker {
+                    label: "Column",
+                    // A rule needs a column, so there is nothing to clear to.
+                    none_label: None,
+                    options: options,
+                    selected: chosen.clone(),
+                    filter_hint: "filter… e.g. resultcode",
+                    on_pick: move |id: String| {
+                        // The pending value belongs to the column that was
+                        // chosen before; keeping it would half-build a rule
+                        // nobody asked for.
+                        field.set(id);
+                        value.set(String::new());
+                    },
                 }
                 div { class: "az-field",
                     label {
@@ -1307,7 +1395,48 @@ fn TableRow(props: TableRowProps) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use super::shorten;
+    use super::{PickOption, shorten, shows};
+
+    fn option(id: &str, haystack: &str) -> PickOption {
+        PickOption {
+            id: id.into(),
+            label: id.into(),
+            note: String::new(),
+            haystack: haystack.into(),
+        }
+    }
+
+    #[test]
+    fn an_empty_filter_shows_everything() {
+        assert!(shows(&option("operationid", "operationid"), "", ""));
+    }
+
+    #[test]
+    fn the_filter_matches_anywhere_in_the_haystack() {
+        let o = option("properties.correlationid", "properties.correlationid");
+        assert!(shows(&o, "correlation", ""));
+        assert!(shows(&o, "properties", ""));
+        assert!(!shows(&o, "operation", ""));
+    }
+
+    /// A correlation key can span several spellings across several tables,
+    /// and any of them is a reasonable thing to search for.
+    #[test]
+    fn a_key_is_findable_by_any_name_it_goes_by() {
+        let o = option("AppRequests\u{1}OperationId", "operationid job_ref_g apprequests myapp_cl");
+        assert!(shows(&o, "job_ref", ""));
+        assert!(shows(&o, "myapp", ""));
+        assert!(shows(&o, "operationid", ""));
+    }
+
+    /// The invariant that keeps the list honest: a filter must never hide the
+    /// thing it says is selected.
+    #[test]
+    fn the_selected_option_survives_any_filter() {
+        let o = option("resultcode", "resultcode");
+        assert!(!shows(&o, "zzz", ""));
+        assert!(shows(&o, "zzz", "resultcode"));
+    }
 
     #[test]
     fn short_values_are_left_alone() {
