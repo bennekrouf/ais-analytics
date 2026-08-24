@@ -14,9 +14,15 @@ fn main() {
         unsafe { std::env::set_var("RUST_LOG", "info,hyper_util=warn,hyper=warn,reqwest=warn"); }
     }
 
-    let webview_data_dir = dirs::data_local_dir()
+    // Per-process subdirectory: WebView2 (Windows) and other webview engines
+    // take an exclusive lock on their data directory, so two instances
+    // sharing one would fail to start (or silently corrupt each other's
+    // cache) when run concurrently.
+    let instances_dir = dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("ais-analytics");
+    prune_stale_instance_dirs(&instances_dir);
+    let webview_data_dir = instances_dir.join(format!("instance-{}", std::process::id()));
 
     let cfg = dioxus::desktop::Config::new()
         .with_data_directory(webview_data_dir)
@@ -27,6 +33,35 @@ fn main() {
                 .with_always_on_top(false),
         );
     dioxus::LaunchBuilder::desktop().with_cfg(cfg).launch(App);
+}
+
+/// Removes `instance-*` webview data directories left behind by past runs.
+/// PIDs are reused by the OS, so we can't check liveness directly; a run
+/// older than a day is assumed to have exited (or crashed) already.
+fn prune_stale_instance_dirs(instances_dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(instances_dir) else {
+        return;
+    };
+    let cutoff = std::time::Duration::from_secs(24 * 60 * 60);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_instance_dir = path.is_dir()
+            && path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("instance-"));
+        if !is_instance_dir {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .and_then(|m| m.elapsed().map_err(|e| std::io::Error::other(e)))
+            .is_ok_and(|age| age > cutoff);
+        if stale {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
 }
 
 #[component]

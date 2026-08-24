@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ais-analytics app icon.
+  Fourth of the family: same squircle, same white mark under the same soft
+  glow as ais-monitor and ais-runner, carrying this app's own hue (copper)
+  the way its window chrome does.
+
+  The mark is what the app draws: three lanes, and one correlation value
+  threaded down through them. The faint rails are the lanes, the thread is
+  the value, the nodes are where it was found. They vanish below about
+  32px, the way the ais-monitor pulse line does, leaving the three nodes on
+  their diagonal as the silhouette.
+
+  Square nodes, because what is found here is a row in a typed table, not a
+  free-form document. That is the one silhouette-level difference from the
+  ais-tracing mark, which is otherwise identical: same app, same picture,
+  a different store underneath.
+
+  Designed at 1024 to read down to 16x16.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Background: copper, matching the accent in main.css but held several
+         steps darker. The raw UI accent puts the white mark at under 2.6:1
+         and washes it out; this lands at 4.5:1, where the ais-monitor icon
+         already sits. -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#D14A1B"/>
+      <stop offset="55%" stop-color="#A33714"/>
+      <stop offset="100%" stop-color="#5E200A"/>
+    </linearGradient>
+    <!-- Mark: white with a hint of copper at the trailing end -->
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#FFDCCB"/>
+    </linearGradient>
+    <!-- Soft glow on the mark -->
+    <filter id="glow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Squircle background (macOS-style continuous corner) -->
+  <rect x="64" y="64" width="896" height="896" rx="224" ry="224" fill="url(#bg)"/>
+
+  <!-- The lanes. Deliberately faint: they carry the meaning at large sizes
+       and drop away at small ones, so the silhouette stays the thread. -->
+  <g fill="#FFC2A8" opacity="0.3">
+    <rect x="200" y="300" width="624" height="40" rx="20"/>
+    <rect x="200" y="492" width="624" height="40" rx="20"/>
+    <rect x="200" y="684" width="624" height="40" rx="20"/>
+  </g>
+
+  <!-- The trace: one value threaded down through the lanes. The bend is
+       deliberate; evenly spaced nodes would fall on a straight line and
+       read as a ruler rather than a path. -->
+  <g filter="url(#glow)">
+    <path d="M 312 320 L 556 512 L 712 704"
+          stroke="url(#mark)" stroke-width="40"
+          stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <rect x="234" y="242" width="156" height="156" rx="34" fill="url(#mark)"/>
+    <rect x="478" y="434" width="156" height="156" rx="34" fill="url(#mark)"/>
+    <rect x="634" y="626" width="156" height="156" rx="34" fill="url(#mark)"/>
+  </g>
+</svg>
