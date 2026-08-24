@@ -6,42 +6,76 @@
    than blue. Structure is shared with ais-monitor and ais-runner;
    only these values differ between the three apps.
 ══════════════════════════════════════════════ */
+/* ── Palette ───────────────────────────────────────────────────────────────
+   Each app in the family is one hue on a dark ground, so which window you're
+   looking at is answerable before you read a word of it:
+
+     ais-monitor    navy      #4fa3ff on #0a0f1a
+     ais-runner     violet    #9d7aff on #140a1a
+     ais-tracing    amber     #ffa726 on #1a1410
+     ais-analytics  copper    #ff7a4d on #1a0f0c   ← this app
+
+   Analytics sits deliberately next to tracing: same app, same layout, a
+   different source underneath, so it stays in the warm family rather than
+   striking out on its own hue. What separates the two is that tracing is
+   golden and this is orange-red, on a ground that is red-black rather than
+   brown-black.
+
+   Everything below is derived from this block — the `-rgb` triplets exist so
+   tints can be written `rgba(var(--blue-rgb), 0.1)` instead of repeating a
+   literal that then has to be found and changed by hand. Re-theming the app
+   is editing this block and nothing else.                                  */
 :root {
-    --bg0:        #1a1410;
-    --bg1:        #241c15;
-    --bg2:        #33281e;
-    --bg3:        #2b2119;
-    --border:     #4a3d2f;
-    --border2:    #33281e;
-    --text1:      #f5e6d3;
-    --text2:      #b8a894;
-    --text3:      #8b7d70;
+    --bg0:        #1a0f0c;
+    --bg1:        #251611;
+    --bg2:        #38211a;
+    --bg3:        #2d1a14;
+    --border:     #55342a;
+    --border2:    #38211a;
+    --text1:      #f7e4da;
+    --text2:      #bd9d8e;
+    --text3:      #8f7568;
     --green:      #6fce7c;
     --green-bg:   #3f8f4a;
-    --red:        #ff7d7d;
-    --red-bg:     #c94040;
-    --blue:       #ffa726;
-    --blue-bg:    #b06f00;
+    /* Pushed pink rather than salmon. The accent is orange-red here, and a
+       failed card has to be unmistakable next to a selected one. */
+    --red:        #ff6b8a;
+    --red-bg:     #c93a5a;
+    --blue:       #ff7a4d;
+    --blue-bg:    #b8501c;
     --yellow:     #f0b960;
+
+    --blue-rgb:   255, 122, 77;
+    --red-rgb:    255, 107, 138;
+    --green-rgb:  111, 206, 124;
+    --yellow-rgb: 240, 185, 96;
 }
 
+/* The same copper, inverted. The `-rgb` triplets have to be restated here:
+   they drive every tint in the sheet, and left alone they would keep tinting
+   light surfaces with the dark theme's values. */
 body.light {
-    --bg0:        #fffbf5;
-    --bg1:        #f7eee1;
-    --bg2:        #efe3d2;
-    --bg3:        #e6d8c4;
-    --border:     #d8c7ae;
-    --border2:    #efe3d2;
-    --text1:      #4a3826;
-    --text2:      #6d5842;
-    --text3:      #9a8672;
+    --bg0:        #fffaf7;
+    --bg1:        #f9ece5;
+    --bg2:        #f2dfd5;
+    --bg3:        #ead3c6;
+    --border:     #dcc3b4;
+    --border2:    #f2dfd5;
+    --text1:      #4a2e24;
+    --text2:      #6d4a3b;
+    --text3:      #9a7c6d;
     --green:      #3f7a2f;
     --green-bg:   #386e2a;
-    --red:        #c04040;
-    --red-bg:     #a83636;
-    --blue:       #a35a00;
-    --blue-bg:    #8f4f00;
+    --red:        #c0304f;
+    --red-bg:     #a82844;
+    --blue:       #b04a18;
+    --blue-bg:    #96400f;
     --yellow:     #8a6510;
+
+    --blue-rgb:   176, 74, 24;
+    --red-rgb:    192, 48, 79;
+    --green-rgb:  63, 122, 47;
+    --yellow-rgb: 138, 101, 16;
 }
 
 /* ── Base reset ───────────────────────────────────────────────────── */
@@ -132,7 +166,7 @@ body {
     cursor: pointer;
     appearance: none;
     -webkit-appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23b8a894' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23bd9d8e' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 10px center;
     padding-right: 28px;
@@ -145,14 +179,14 @@ body {
     font-size: 12px;
     color: var(--yellow);
     padding: 6px 10px;
-    background: rgba(240,185,96,0.08);
+    background: rgba(var(--yellow-rgb), 0.08);
     border-radius: 6px;
 }
 .az-error {
     color: var(--red);
     font-size: 12px;
     padding: 8px 12px;
-    background: rgba(255,125,125,0.08);
+    background: rgba(var(--red-rgb), 0.08);
     border-radius: 6px;
     text-align: left;
 }
@@ -327,7 +361,7 @@ body {
     cursor: pointer;
     appearance: none;
     -webkit-appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23b8a894' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23bd9d8e' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 7px center;
     white-space: nowrap;
@@ -487,7 +521,7 @@ table.schema-table tr:hover td { background: var(--bg2); }
 .key-summary code {
     font-family: inherit;
     color: var(--blue);
-    background: rgba(255,167,38,0.10);
+    background: rgba(var(--blue-rgb), 0.10);
     padding: 1px 6px;
     border-radius: 4px;
 }
@@ -501,9 +535,9 @@ table.schema-table tr:hover td { background: var(--bg2); }
     border-radius: 10px;
     white-space: nowrap;
 }
-.chip.ok    { color: var(--green); background: rgba(111,206,124,0.12); }
-.chip.warn  { color: var(--yellow); background: rgba(240,185,96,0.12); }
-.chip.bad   { color: var(--red); background: rgba(255,125,125,0.14); }
+.chip.ok    { color: var(--green); background: rgba(var(--green-rgb), 0.12); }
+.chip.warn  { color: var(--yellow); background: rgba(var(--yellow-rgb), 0.12); }
+.chip.bad   { color: var(--red); background: rgba(var(--red-rgb), 0.14); }
 .chip.muted { color: var(--text3); background: var(--bg2); }
 .evidence .chip { font-weight: 500; letter-spacing: 0; text-transform: none; }
 
@@ -663,7 +697,7 @@ table.schema-table tr:hover td { background: var(--bg2); }
 .lane-body { position: relative; flex: 1; }
 
 .lane.awaiting { background: repeating-linear-gradient(
-    45deg, transparent, transparent 6px, rgba(240,185,96,0.045) 6px, rgba(240,185,96,0.045) 12px); }
+    45deg, transparent, transparent 6px, rgba(var(--yellow-rgb), 0.045) 6px, rgba(var(--yellow-rgb), 0.045) 12px); }
 .lane.awaiting .lane-name { color: var(--yellow); }
 .lane.failed .lane-name { color: var(--red); }
 
@@ -717,7 +751,7 @@ table.schema-table tr:hover td { background: var(--bg2); }
     padding: 3px 4px 3px 10px;
     border-radius: 10px;
     border: 1px solid var(--red);
-    background: rgba(255,125,125,0.10);
+    background: rgba(var(--red-rgb), 0.10);
     color: var(--red);
     white-space: nowrap;
 }
@@ -733,7 +767,7 @@ table.schema-table tr:hover td { background: var(--bg2); }
     cursor: pointer;
     opacity: 0.65;
 }
-.rule-drop:hover { opacity: 1; background: rgba(255,125,125,0.18); }
+.rule-drop:hover { opacity: 1; background: rgba(var(--red-rgb), 0.18); }
 
 .rule-form {
     display: flex;
@@ -848,15 +882,15 @@ table.schema-table tr:hover td { background: var(--bg2); }
 /* A failed step. The left accent carries the signal even when the card is
    clipped at the edge of the scroll track. */
 .block.errored {
-    background: rgba(255,125,125,0.10);
+    background: rgba(var(--red-rgb), 0.10);
     border-color: var(--red);
     border-left-color: var(--red);
 }
-.block.errored:hover { background: rgba(255,125,125,0.16); }
+.block.errored:hover { background: rgba(var(--red-rgb), 0.16); }
 .block.errored .block-label { color: var(--red); }
 /* Selection still has to win — you must be able to tell which red card is open. */
 .block.errored.selected {
-    background: rgba(255,125,125,0.16);
+    background: rgba(var(--red-rgb), 0.16);
     border-color: var(--blue);
     box-shadow: 0 0 0 1px var(--blue);
 }
@@ -924,7 +958,7 @@ table.schema-table tr:hover td { background: var(--bg2); }
     opacity: 1;
     color: var(--green);
     border-color: var(--green);
-    background: rgba(63,185,80,0.12);
+    background: rgba(var(--green-rgb), 0.12);
 }
 .doc-json {
     font-family: inherit;
@@ -951,8 +985,8 @@ table.schema-table tr:hover td { background: var(--bg2); }
 }
 
 table.schema-table tr.key-row td {
-    background: rgba(255,167,38,0.10);
+    background: rgba(var(--blue-rgb), 0.10);
     color: var(--blue);
     font-weight: 600;
 }
-table.schema-table tr.key-row:hover td { background: rgba(255,167,38,0.16); }
+table.schema-table tr.key-row:hover td { background: rgba(var(--blue-rgb), 0.16); }
