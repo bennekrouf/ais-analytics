@@ -990,3 +990,41 @@ table.schema-table tr.key-row td {
     font-weight: 600;
 }
 table.schema-table tr.key-row:hover td { background: rgba(var(--blue-rgb), 0.16); }
+
+/* ── Update banner ─────────────────────────────────────────────────────────
+   Fixed to the top and dismissable for the session. Reads --blue-bg, so it
+   arrives in this app's hue without knowing what that hue is. */
+.update-banner {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 999;
+    background: var(--blue-bg);
+    color: #fff;
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 13px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+}
+.update-banner-text { flex: 1; }
+.update-banner-text strong { font-weight: 700; }
+.update-banner-link {
+    color: #fff;
+    text-decoration: underline;
+    font-weight: 600;
+    padding: 4px 10px;
+    border: 1px solid rgba(255,255,255,0.4);
+    border-radius: 4px;
+}
+.update-banner-link:hover { background: rgba(255,255,255,0.15); }
+.update-banner-dismiss {
+    background: transparent;
+    border: none;
+    color: #fff;
+    font-size: 20px;
+    cursor: pointer;
+    padding: 0 4px;
+    opacity: 0.7;
+}
+.update-banner-dismiss:hover { opacity: 1; }
