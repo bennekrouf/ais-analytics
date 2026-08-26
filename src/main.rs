@@ -29,13 +29,39 @@ fn main() {
 
     let cfg = dioxus::desktop::Config::new()
         .with_data_directory(webview_data_dir)
-        .with_window(
-            dioxus::desktop::WindowBuilder::new()
-                .with_title(concat!("ais-analytics ", env!("CARGO_PKG_VERSION")))
-                .with_inner_size(LogicalSize::new(1100.0, 760.0))
-                .with_always_on_top(false),
-        );
+        .with_window(window_builder(concat!(
+            "ais-analytics ",
+            env!("CARGO_PKG_VERSION")
+        )));
     dioxus::LaunchBuilder::desktop().with_cfg(cfg).launch(App);
+}
+
+fn window_builder(title: &str) -> dioxus::desktop::WindowBuilder {
+    dioxus::desktop::WindowBuilder::new()
+        .with_title(title)
+        .with_inner_size(LogicalSize::new(1100.0, 760.0))
+        .with_always_on_top(false)
+}
+
+/// Opens another window on `workspace`, in this same process — sharing the
+/// webview data directory and every on-disk cache rather than racing a
+/// second process for them. Each window gets its own `VirtualDom`, so its
+/// own signals and its own welcome screen to go back to.
+pub fn open_in_new_window(workspace: Workspace) {
+    let dom = VirtualDom::new_with_props(
+        AppRoot,
+        AppRootProps {
+            initial: Some(workspace.clone()),
+        },
+    );
+    dioxus::desktop::window().new_window(
+        dom,
+        dioxus::desktop::Config::new().with_window(window_builder(&format!(
+            "ais-analytics {} — {}",
+            env!("CARGO_PKG_VERSION"),
+            workspace.name
+        ))),
+    );
 }
 
 /// Removes `instance-*` webview data directories left behind by past runs.
@@ -67,9 +93,18 @@ fn prune_stale_instance_dirs(instances_dir: &std::path::Path) {
     }
 }
 
+/// The first window's root. Every other window is an `AppRoot` too — this
+/// exists only because the launcher needs a component that takes no props.
 #[component]
 fn App() -> Element {
-    let mut workspace = use_signal(|| Option::<Workspace>::None);
+    rsx! { AppRoot { initial: Option::<Workspace>::None } }
+}
+
+/// One window. Each has its own `VirtualDom`, so its own signals and its own
+/// open workspace — and its own welcome screen to go back to.
+#[component]
+fn AppRoot(initial: Option<Workspace>) -> Element {
+    let mut workspace = use_signal(|| initial);
 
     let system_light =
         dark_light::detect().unwrap_or(dark_light::Mode::Dark) != dark_light::Mode::Dark;
@@ -131,7 +166,7 @@ fn App() -> Element {
         match current {
             None => rsx! {
                 Welcome {
-                    on_connect: move |ws: Workspace| workspace.set(Some(ws)),
+                    on_connect: move |ws: Workspace| open_in_new_window(ws),
                 }
             },
             Some(ws) => rsx! {

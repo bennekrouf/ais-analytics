@@ -17,6 +17,7 @@
 
 use crate::services::discover::KeyCandidate;
 use crate::services::loganalytics::{
+    column_ref, kql_string, let_literal, table_ref, Client, TimeRange,
     Client, TimeRange, column_ref, kql_string, let_literal, table_ref,
 };
 use chrono::{DateTime, NaiveDateTime, Utc};
