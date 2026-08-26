@@ -44,6 +44,7 @@ pub const MAX_ROWS: usize = 5_000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TimeRange {
     LastHour,
+    Last2Hours,
     Last4Hours,
     LastDay,
     LastWeek,
@@ -61,6 +62,7 @@ impl TimeRange {
     pub fn iso(self) -> &'static str {
         match self {
             TimeRange::LastHour => "PT1H",
+            TimeRange::Last2Hours => "PT2H",
             TimeRange::Last4Hours => "PT4H",
             TimeRange::LastDay => "P1D",
             TimeRange::LastWeek => "P7D",
@@ -71,6 +73,7 @@ impl TimeRange {
     pub fn label(self) -> &'static str {
         match self {
             TimeRange::LastHour => "Last hour",
+            TimeRange::Last2Hours => "Last 2 hours",
             TimeRange::Last4Hours => "Last 4 hours",
             TimeRange::LastDay => "Last 24 hours",
             TimeRange::LastWeek => "Last 7 days",
@@ -78,9 +81,10 @@ impl TimeRange {
         }
     }
 
-    pub fn all() -> [TimeRange; 5] {
+    pub fn all() -> [TimeRange; 6] {
         [
             TimeRange::LastHour,
+            TimeRange::Last2Hours,
             TimeRange::Last4Hours,
             TimeRange::LastDay,
             TimeRange::LastWeek,

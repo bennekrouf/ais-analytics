@@ -167,6 +167,145 @@ pub fn grant_self_log_analytics_reader(workspace: &Workspace) -> Result<(), Stri
     Ok(())
 }
 
+// ── Key Vault references ──────────────────────────────────────────────────
+
+/// One `@Microsoft.KeyVault(...)` app setting, and whether it resolved.
+///
+/// This is the root-cause half of the exceptions view. A reference that
+/// fails to resolve leaves the setting *empty* rather than absent, so the
+/// app starts, reads a blank connection string, and throws something that
+/// says nothing about Key Vault. Catching it here names the cause before
+/// anyone has to reverse-engineer it from a stack trace.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyVaultRef {
+    pub app: String,
+    pub setting: String,
+    pub status: String,
+    pub details: String,
+}
+
+impl KeyVaultRef {
+    pub fn resolved(&self) -> bool {
+        self.status.eq_ignore_ascii_case("Resolved")
+    }
+}
+
+/// Azure resource names are a restricted alphabet. These names arrive from
+/// `AppRoleName` in log data, which is written by the monitored app rather
+/// than by Azure, so they are checked before being handed to the CLI.
+///
+/// The leading-hyphen rule is the one that matters. Arguments are passed as
+/// a vector rather than through a shell, so there is no shell injection to
+/// worry about — but a value that begins with `-` is read by `az` as an
+/// *option* rather than as the name, which is enough to turn a log line into
+/// a different command. Real Azure resource names never start with one.
+fn plausible_resource_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 90
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
+/// Resolves an app name to its ARM resource id within one subscription.
+///
+/// Scoped to the workspace's own subscription deliberately: searching every
+/// subscription for every name seen in a log window is slow and mostly
+/// wrong, and an app almost always shares a subscription with the App
+/// Insights component it writes to.
+fn find_site(subscription: &str, name: &str) -> Option<String> {
+    if !plausible_resource_name(name) {
+        return None;
+    }
+    let output = az_command(&[
+        "resource", "list",
+        "--name", name,
+        "--resource-type", "Microsoft.Web/sites",
+        "--subscription", subscription,
+        "--query", "[].id",
+        "--output", "json",
+    ])
+    .output()
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let ids: Vec<String> =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).ok()?;
+    ids.into_iter().next()
+}
+
+/// Every Key Vault-backed app setting on one site, with its resolution state.
+fn site_key_vault_refs(app: &str, resource_id: &str) -> Result<Vec<KeyVaultRef>, String> {
+    let url = format!(
+        "https://management.azure.com{resource_id}/config/configreferences/appsettings\
+?api-version=2022-03-01"
+    );
+    let output = az_command(&["rest", "--method", "get", "--url", &url, "--output", "json"])
+        .output()
+        .map_err(|e| format!("az rest failed: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let body: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+            .map_err(|e| format!("parse: {e}"))?;
+    Ok(parse_config_references(app, &body))
+}
+
+/// Reads the reference list out of a `configreferences/appsettings` response.
+///
+/// The payload keys settings by name under `properties`. Both the flat and
+/// the `configReferences`-wrapped shapes are accepted, and anything without
+/// a status is skipped rather than guessed at, so an API revision degrades
+/// to reporting nothing instead of reporting fiction.
+fn parse_config_references(app: &str, body: &serde_json::Value) -> Vec<KeyVaultRef> {
+    let props = body
+        .get("properties")
+        .and_then(|p| p.get("configReferences").or(Some(p)));
+    let Some(serde_json::Value::Object(map)) = props else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (setting, entry) in map {
+        let Some(status) = entry.get("status").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        out.push(KeyVaultRef {
+            app: app.to_string(),
+            setting: setting.clone(),
+            status: status.to_string(),
+            details: entry
+                .get("details")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        });
+    }
+    out.sort_by(|a, b| a.setting.cmp(&b.setting));
+    out
+}
+
+/// Checks the Key Vault references of every named app, returning only the
+/// ones that are *not* resolved.
+///
+/// Names that resolve to nothing are skipped silently: an `AppRoleName` need
+/// not be an App Service at all, and "we could not find a resource by that
+/// name" is not a finding worth showing anyone.
+pub fn unresolved_key_vault_refs(subscription: &str, apps: &[String]) -> Vec<KeyVaultRef> {
+    let mut out = Vec::new();
+    for app in apps {
+        let Some(resource_id) = find_site(subscription, app) else {
+            continue;
+        };
+        if let Ok(refs) = site_key_vault_refs(app, &resource_id) {
+            out.extend(refs.into_iter().filter(|r| !r.resolved()));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +346,70 @@ mod tests {
         };
         let text = serde_json::to_string(&ws).unwrap();
         assert_eq!(serde_json::from_str::<Workspace>(&text).unwrap(), ws);
+    }
+
+    #[test]
+    fn log_written_names_are_checked_before_reaching_the_cli() {
+        assert!(plausible_resource_name("fn-orders-prod"));
+        assert!(plausible_resource_name("my_app.v2"));
+        // AppRoleName is written by the monitored app, not by Azure.
+        assert!(!plausible_resource_name(""));
+        // Passed as an argv entry, so this is not shell injection — but `az`
+        // would read it as an option and run a different query.
+        assert!(!plausible_resource_name("--query"));
+        assert!(!plausible_resource_name("-n"));
+        assert!(!plausible_resource_name("a b"));
+        assert!(!plausible_resource_name("app;rm -rf /"));
+        assert!(!plausible_resource_name(&"x".repeat(91)));
+    }
+
+    #[test]
+    fn unresolved_references_are_separated_from_healthy_ones() {
+        let body = serde_json::json!({
+            "properties": {
+                "SqlConnection": {
+                    "status": "InitializationError",
+                    "details": "Key Vault reference could not be resolved"
+                },
+                "StorageConnection": { "status": "Resolved", "details": "" }
+            }
+        });
+        let refs = parse_config_references("fn-orders", &body);
+        assert_eq!(refs.len(), 2);
+        let bad: Vec<&KeyVaultRef> = refs.iter().filter(|r| !r.resolved()).collect();
+        assert_eq!(bad.len(), 1);
+        assert_eq!(bad[0].setting, "SqlConnection");
+        assert_eq!(bad[0].app, "fn-orders");
+    }
+
+    #[test]
+    fn the_wrapped_payload_shape_is_also_accepted() {
+        let body = serde_json::json!({
+            "properties": { "configReferences": {
+                "Secret": { "status": "Resolved" }
+            }}
+        });
+        assert_eq!(parse_config_references("app", &body).len(), 1);
+    }
+
+    /// An API that changes shape should make this report nothing, never
+    /// invent a status it did not receive.
+    #[test]
+    fn an_unrecognised_payload_reports_nothing() {
+        assert!(parse_config_references("app", &serde_json::json!({})).is_empty());
+        assert!(parse_config_references("app", &serde_json::json!({"properties": []})).is_empty());
+        // A setting with no status at all is skipped, not defaulted.
+        let no_status = serde_json::json!({"properties": {"S": {"vaultName": "v"}}});
+        assert!(parse_config_references("app", &no_status).is_empty());
+    }
+
+    #[test]
+    fn resolution_status_is_matched_case_insensitively() {
+        let r = |s: &str| KeyVaultRef {
+            app: "a".into(), setting: "s".into(), status: s.into(), details: String::new(),
+        };
+        assert!(r("Resolved").resolved());
+        assert!(r("resolved").resolved());
+        assert!(!r("InitializationError").resolved());
     }
 }
