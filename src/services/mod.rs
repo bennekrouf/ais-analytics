@@ -1,6 +1,7 @@
 pub mod az;
 pub mod cache;
 pub mod discover;
+pub mod exceptions;
 pub mod history;
 pub mod loganalytics;
 pub mod schema;

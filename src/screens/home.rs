@@ -1,15 +1,19 @@
+use crate::screens::exceptions_view::ExceptionsView;
 use crate::screens::trace_view::TraceView;
 use crate::services::loganalytics::{Client, TimeRange};
-use crate::services::{az::Workspace, cache, discover, history, schema, trace};
+use crate::services::{az, az::Workspace, cache, discover, exceptions, history, schema, trace};
 use dioxus::prelude::*;
 use std::collections::BTreeSet;
 
 /// Top-level sections. Setup answers "what are we tracing and where could it
-/// be"; Trace answers "where did this one value actually go".
+/// be"; Trace answers "where did this one value actually go"; Issues answers
+/// "what is failing repeatedly right now" — the question you have before you
+/// have a correlation id to paste.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tab {
     Setup,
     Trace,
+    Issues,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,6 +58,16 @@ pub fn Home(props: HomeProps) -> Element {
     let mut label_id = use_signal(String::new);
     // Empty = one lane per table, the physical default.
     let mut lane_id = use_signal(String::new);
+
+    // Issues tab. It reads a different window from the rest of the app on
+    // purpose: spotting a listener that retries every ninety seconds needs a
+    // tight window, while a trace lookup usually wants a wide one.
+    let mut issues_range = use_signal(|| TimeRange::Last2Hours);
+    let mut issues = use_signal(Vec::<exceptions::Group>::new);
+    let mut issues_state = use_signal(|| LoadState::Idle);
+    let mut issues_open = use_signal(|| Option::<String>::None);
+    let mut unresolved = use_signal(Vec::<az::KeyVaultRef>::new);
+    let mut checking_config = use_signal(|| false);
 
     let traced = use_signal(|| Option::<trace::Trace>::None);
     let tracing = use_signal(|| false);
@@ -221,9 +235,63 @@ pub fn Home(props: HomeProps) -> Element {
         }
     });
 
+    // Finds what is failing repeatedly, then — separately and in the
+    // background — asks ARM whether any Key Vault reference on the implicated
+    // apps failed to resolve. The second answer is the cause of a good share
+    // of the first, but it is a control-plane call and must never hold up the
+    // list of exceptions.
+    let load_issues = {
+        let id = workspace_id.clone();
+        let subscription = workspace.subscription_id.clone();
+        move |_: ()| {
+            let id = id.clone();
+            let subscription = subscription.clone();
+            let range = *issues_range.peek();
+            issues_state.set(LoadState::Loading);
+            unresolved.set(Vec::new());
+            spawn(async move {
+                let client = match Client::connect() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        issues_state.set(LoadState::Failed(e));
+                        return;
+                    }
+                };
+                match exceptions::recurring(
+                    &client, &id, range, exceptions::DEFAULT_MIN_COUNT,
+                ).await {
+                    Ok(found) => {
+                        // Only the apps that actually appear in a failure are
+                        // worth a control-plane round-trip.
+                        let apps: BTreeSet<String> = found
+                            .iter()
+                            .flat_map(|g| g.roles.iter().cloned())
+                            .collect();
+                        issues.set(found);
+                        issues_state.set(LoadState::Done);
+
+                        if !apps.is_empty() && !subscription.is_empty() {
+                            checking_config.set(true);
+                            let apps: Vec<String> = apps.into_iter().collect();
+                            let found = tokio::task::spawn_blocking(move || {
+                                az::unresolved_key_vault_refs(&subscription, &apps)
+                            })
+                            .await
+                            .unwrap_or_default();
+                            unresolved.set(found);
+                            checking_config.set(false);
+                        }
+                    }
+                    Err(e) => issues_state.set(LoadState::Failed(e)),
+                }
+            });
+        }
+    };
+
     let is_forbidden = matches!(&*state.read(), LoadState::Failed(e) if e.contains("access denied"));
 
     let on_setup = *tab.read() == Tab::Setup;
+    let on_issues = *tab.read() == Tab::Issues;
 
     // The lane axis is a view of the rows already fetched, so changing it
     // re-renders rather than re-queries — and takes effect immediately on the
@@ -246,14 +314,18 @@ pub fn Home(props: HomeProps) -> Element {
     // The open document, resolved from the selected card each render so it
     // can never drift out of step with the trace behind it. It belongs to the
     // Trace tab, so it folds away with the cards it came from.
-    let open_doc = selected_block.read().clone().filter(|_| !on_setup).and_then(|id| {
+    let open_doc = selected_block
+        .read()
+        .clone()
+        .filter(|_| *tab.read() == Tab::Trace)
+        .and_then(|id| {
         traced
             .read()
             .as_ref()
             // The card's own table, not the lane — once lanes are column
             // values the two are different things.
             .and_then(|t| t.find_block(&id).map(|(_, b)| (b.table.clone(), b.clone())))
-    });
+        });
 
     rsx! {
         div { class: "app-shell",
@@ -277,10 +349,25 @@ pub fn Home(props: HomeProps) -> Element {
                         "⚙"
                     }
                     button {
-                        class: if on_setup { "topbar-tab" } else { "topbar-tab active" },
+                        class: if *tab.read() == Tab::Trace { "topbar-tab active" } else { "topbar-tab" },
                         title: "Trace — follow one key value across the tables",
                         onclick: move |_| tab.set(Tab::Trace),
                         "🔎"
+                    }
+                    button {
+                        class: if on_issues { "topbar-tab active" } else { "topbar-tab" },
+                        title: "Issues — what is failing repeatedly right now",
+                        onclick: {
+                            let mut load_issues = load_issues.clone();
+                            move |_| {
+                                tab.set(Tab::Issues);
+                                // First visit only; refreshing is explicit.
+                                if matches!(*issues_state.peek(), LoadState::Idle) {
+                                    load_issues(());
+                                }
+                            }
+                        },
+                        "⚠"
                     }
                 }
             }
@@ -415,7 +502,74 @@ pub fn Home(props: HomeProps) -> Element {
                         .cloned();
                     rsx! {
                         div {
-                            if on_setup {
+                            if on_issues {
+                                div { class: "issues-bar",
+                                    label { class: "rows-pick",
+                                        "window:"
+                                        select {
+                                            onchange: {
+                                                let mut load_issues = load_issues.clone();
+                                                move |evt: FormEvent| {
+                                                    let picked = TimeRange::all()
+                                                        .into_iter()
+                                                        .find(|r| r.iso() == evt.value());
+                                                    if let Some(picked) = picked {
+                                                        issues_range.set(picked);
+                                                        load_issues(());
+                                                    }
+                                                }
+                                            },
+                                            for r in TimeRange::all() {
+                                                option {
+                                                    value: "{r.iso()}",
+                                                    selected: r == *issues_range.read(),
+                                                    "{r.label()}"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    div { class: "spacer" }
+                                    button {
+                                        class: "btn",
+                                        disabled: matches!(*issues_state.read(), LoadState::Loading),
+                                        onclick: {
+                                            let mut load_issues = load_issues.clone();
+                                            move |_| load_issues(())
+                                        },
+                                        "↻ Refresh"
+                                    }
+                                }
+
+                                ExceptionsView {
+                                    groups: issues.read().clone(),
+                                    loading: matches!(*issues_state.read(), LoadState::Loading),
+                                    error: match &*issues_state.read() {
+                                        LoadState::Failed(e) => Some(e.clone()),
+                                        _ => None,
+                                    },
+                                    has_table: exceptions::has_table_named(
+                                        &schemas.read().iter().map(|t| t.table.clone()).collect::<Vec<_>>()
+                                    ),
+                                    unresolved: unresolved.read().clone(),
+                                    checking_config: *checking_config.read(),
+                                    open: issues_open.read().clone(),
+                                    on_toggle: move |id: String| {
+                                        let same = issues_open.peek().as_deref() == Some(id.as_str());
+                                        issues_open.set(if same { None } else { Some(id) });
+                                    },
+                                    // Pivot: hand the correlation id to the
+                                    // existing trace path and switch tabs, so
+                                    // "what is broken" leads into "what
+                                    // happened to this one run".
+                                    on_trace: {
+                                        let id = workspace_id.clone();
+                                        move |cid: String| {
+                                            tab.set(Tab::Trace);
+                                            follow.run(&id, cid, *range.peek());
+                                        }
+                                    },
+                                }
+                            } else if on_setup {
                                 if !schemas.read().is_empty() {
                                     TraceSetup {
                                         insights: insights.clone(),
@@ -466,7 +620,7 @@ pub fn Home(props: HomeProps) -> Element {
                                 }
                             }
 
-                            if !on_setup {
+                            if *tab.read() == Tab::Trace {
                                 if *tracing.read() {
                                     div { class: "panel", "Following the value across tables..." }
                                 } else if let Some(t) = shown.read().clone() {

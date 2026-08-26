@@ -1028,3 +1028,72 @@ table.schema-table tr.key-row:hover td { background: rgba(var(--blue-rgb), 0.16)
     opacity: 0.7;
 }
 .update-banner-dismiss:hover { opacity: 1; }
+
+/* ── Issues tab ────────────────────────────────────────────────────────────
+   Ordered by cadence before volume, and coloured the same way: a group that
+   fires on a timer gets the red left edge, because that is the one that will
+   still be failing tomorrow. */
+.issues-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.exc-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+
+.exc-row {
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg1);
+    padding: 9px 12px;
+}
+.exc-row.recurring {
+    border-left-color: var(--red);
+    background: rgba(var(--red-rgb), 0.06);
+}
+
+.exc-head { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.exc-type { font-weight: 600; font-size: 12px; }
+.exc-count { font-size: 11px; color: var(--text2); white-space: nowrap; }
+
+.exc-message {
+    font-size: 11px;
+    color: var(--text2);
+    margin-top: 5px;
+    /* Framework messages run long; two lines is enough to recognise one. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.exc-hints { display: flex; flex-direction: column; gap: 4px; margin-top: 7px; }
+.exc-hint {
+    font-size: 11px;
+    line-height: 1.45;
+    padding: 5px 9px;
+    border-radius: 5px;
+    border-left: 2px solid transparent;
+}
+/* A known signature with a known cause — the most actionable thing here. */
+.exc-hint.cause   { background: rgba(var(--red-rgb), 0.10);    border-left-color: var(--red);    color: var(--text1); }
+/* Several symptoms, one problem. */
+.exc-hint.shared  { background: rgba(var(--blue-rgb), 0.10);   border-left-color: var(--blue);   color: var(--text1); }
+/* Evidence about how it fires, rather than what it is. */
+.exc-hint.cadence { background: rgba(var(--yellow-rgb), 0.10); border-left-color: var(--yellow); color: var(--text1); }
+
+.exc-detail {
+    margin-top: 9px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border2);
+}
+.exc-trace { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+
+/* Root cause sits above symptoms, so it reads first. */
+.kv-panel { border-color: var(--red); }
+.kv-list { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+.kv-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 11px; }
+.kv-app { color: var(--text2); }
+.kv-detail { color: var(--text3); }
