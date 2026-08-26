@@ -12,7 +12,9 @@ const MAIN_CSS: &str = include_str!("../assets/main.css");
 fn main() {
     if std::env::var("RUST_LOG").is_err() {
         // SAFETY: single-threaded, before any other threads (e.g. tokio) start.
-        unsafe { std::env::set_var("RUST_LOG", "info,hyper_util=warn,hyper=warn,reqwest=warn"); }
+        unsafe {
+            std::env::set_var("RUST_LOG", "info,hyper_util=warn,hyper=warn,reqwest=warn");
+        }
     }
 
     // Per-process subdirectory: WebView2 (Windows) and other webview engines
@@ -69,21 +71,24 @@ fn prune_stale_instance_dirs(instances_dir: &std::path::Path) {
 fn App() -> Element {
     let mut workspace = use_signal(|| Option::<Workspace>::None);
 
-    let system_light = dark_light::detect().unwrap_or(dark_light::Mode::Dark) != dark_light::Mode::Dark;
+    let system_light =
+        dark_light::detect().unwrap_or(dark_light::Mode::Dark) != dark_light::Mode::Dark;
     let is_light = use_signal(|| system_light);
 
     // ── Auto-update check ──────────────────────────────────────────────────
     // Deliberately after a delay and entirely best-effort: a release check is
     // never worth slowing a cold start, and a failed one is not worth saying
     // anything about.
-    let mut update_info      = use_signal(|| Option::<update_check::UpdateInfo>::None);
+    let mut update_info = use_signal(|| Option::<update_check::UpdateInfo>::None);
     let mut update_dismissed = use_signal(|| false);
-    use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        if let Some(info) = update_check::check().await {
-            update_info.set(Some(info));
-        }
-    });
+    use_coroutine(
+        move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            if let Some(info) = update_check::check().await {
+                update_info.set(Some(info));
+            }
+        },
+    );
 
     use_effect(move || {
         let css = MAIN_CSS.replace('`', "\\`").replace("${", "\\${");

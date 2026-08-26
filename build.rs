@@ -25,12 +25,15 @@ fn main() {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("assets/icon.ico");
         res.set("FileDescription", "AIS Analytics");
-        res.set("ProductName",     "AIS Analytics");
-        res.set("CompanyName",     "Bennekrouf");
-        res.set("LegalCopyright",  "© Bennekrouf");
+        res.set("ProductName", "AIS Analytics");
+        res.set("CompanyName", "Bennekrouf");
+        res.set("LegalCopyright", "© Bennekrouf");
         if let Err(e) = res.compile() {
-            println!("cargo:warning=Failed to embed Windows icon resource: {} \
-                 (the build will continue without an icon)", e);
+            println!(
+                "cargo:warning=Failed to embed Windows icon resource: {} \
+                 (the build will continue without an icon)",
+                e
+            );
         }
     }
 }

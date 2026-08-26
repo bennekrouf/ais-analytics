@@ -72,7 +72,10 @@ pub fn load(workspace_id: &str) -> Vec<Entry> {
 /// Records a value as the most recent, returning the updated list.
 pub fn record(workspace_id: &str, entry: Entry) -> Vec<Entry> {
     let mut store = read();
-    let list = store.workspaces.entry(workspace_id.to_string()).or_default();
+    let list = store
+        .workspaces
+        .entry(workspace_id.to_string())
+        .or_default();
     insert(list, entry);
     let updated = list.clone();
     write(&store);
@@ -110,7 +113,9 @@ pub fn record_workspace(workspace: &Workspace) -> Vec<Workspace> {
 
 pub fn forget_workspace(workspace_id: &str) -> Vec<Workspace> {
     let mut store = read();
-    store.recent_workspaces.retain(|w| w.customer_id != workspace_id);
+    store
+        .recent_workspaces
+        .retain(|w| w.customer_id != workspace_id);
     let updated = store.recent_workspaces.clone();
     write(&store);
     updated

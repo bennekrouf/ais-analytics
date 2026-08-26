@@ -131,7 +131,10 @@ pub async fn scan(
         // A single failing chunk shouldn't lose the rest of the workspace —
         // one retired table or one Basic-tier table that rejects `union` is
         // not a reason to show the user nothing.
-        let Ok(rows) = client.query(workspace_id, &sample_query(&names), range).await else {
+        let Ok(rows) = client
+            .query(workspace_id, &sample_query(&names), range)
+            .await
+        else {
             continue;
         };
 
@@ -139,10 +142,8 @@ pub async fn scan(
             let Some(table) = row.get(SOURCE_COLUMN).and_then(Value::as_str) else {
                 continue;
             };
-            let rows_in_range = row
-                .get("Rows")
-                .and_then(Value::as_u64)
-                .unwrap_or_default() as usize;
+            let rows_in_range =
+                row.get("Rows").and_then(Value::as_u64).unwrap_or_default() as usize;
             let sample = row
                 .get("Sample")
                 .and_then(Value::as_array)
@@ -163,7 +164,11 @@ pub async fn scan(
         }
     }
 
-    out.sort_by(|a, b| b.rows_in_range.cmp(&a.rows_in_range).then(a.table.cmp(&b.table)));
+    out.sort_by(|a, b| {
+        b.rows_in_range
+            .cmp(&a.rows_in_range)
+            .then(a.table.cmp(&b.table))
+    });
     Ok(out)
 }
 

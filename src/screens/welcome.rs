@@ -26,9 +26,18 @@ pub fn Welcome(props: WelcomeProps) -> Element {
         loading_workspaces.set(true);
         spawn(async move {
             match tokio::task::spawn_blocking(az::list_workspaces).await {
-                Ok(Ok(list)) => { workspaces.set(list); workspaces_error.set(None); }
-                Ok(Err(e)) => { workspaces.set(vec![]); workspaces_error.set(Some(e)); }
-                Err(e) => { workspaces.set(vec![]); workspaces_error.set(Some(e.to_string())); }
+                Ok(Ok(list)) => {
+                    workspaces.set(list);
+                    workspaces_error.set(None);
+                }
+                Ok(Err(e)) => {
+                    workspaces.set(vec![]);
+                    workspaces_error.set(Some(e));
+                }
+                Err(e) => {
+                    workspaces.set(vec![]);
+                    workspaces_error.set(Some(e.to_string()));
+                }
             }
             loading_workspaces.set(false);
         });
@@ -36,7 +45,8 @@ pub fn Welcome(props: WelcomeProps) -> Element {
 
     use_effect(move || {
         spawn(async move {
-            let state = tokio::task::spawn_blocking(az::check_login).await
+            let state = tokio::task::spawn_blocking(az::check_login)
+                .await
                 .unwrap_or(AzLoginState::NotLoggedIn);
             let is_logged_in = matches!(state, AzLoginState::LoggedIn { .. });
             az_state.set(state);

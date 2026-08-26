@@ -8,8 +8,7 @@ use serde::Deserialize;
 
 const LATEST_URL: &str =
     "https://github.com/bennekrouf/ais-analytics/releases/latest/download/latest.json";
-const RELEASES_URL: &str =
-    "https://github.com/bennekrouf/ais-analytics/releases/latest";
+const RELEASES_URL: &str = "https://github.com/bennekrouf/ais-analytics/releases/latest";
 
 #[derive(Debug, Deserialize)]
 struct LatestJson {
