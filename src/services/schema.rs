@@ -10,7 +10,7 @@
 //! KQL can union and group server-side, so the whole scan is a handful of
 //! round-trips instead of one per entity.
 
-use crate::services::loganalytics::{Client, ColumnMeta, TableMeta, TimeRange, table_ref};
+use crate::services::loganalytics::{table_ref, Client, ColumnMeta, TableMeta, TimeRange};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};

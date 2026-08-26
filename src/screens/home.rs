@@ -1557,7 +1557,7 @@ fn TableRow(props: TableRowProps) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use super::{PickOption, shorten, shows};
+    use super::{shorten, shows, PickOption};
 
     fn option(id: &str, haystack: &str) -> PickOption {
         PickOption {
