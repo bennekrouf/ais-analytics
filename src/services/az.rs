@@ -15,7 +15,10 @@ fn az_command(args: &[&str]) -> Command {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AzLoginState {
-    LoggedIn { account: String, subscription_id: String },
+    LoggedIn {
+        account: String,
+        subscription_id: String,
+    },
     NotLoggedIn,
     AzNotFound,
 }
@@ -34,7 +37,10 @@ pub fn check_login() -> AzLoginState {
         Ok(out) if out.status.success() => {
             let body = String::from_utf8_lossy(&out.stdout);
             match serde_json::from_str::<AzAccount>(&body) {
-                Ok(acc) => AzLoginState::LoggedIn { account: acc.name, subscription_id: acc.id },
+                Ok(acc) => AzLoginState::LoggedIn {
+                    account: acc.name,
+                    subscription_id: acc.id,
+                },
                 Err(_) => AzLoginState::NotLoggedIn,
             }
         }
@@ -47,16 +53,13 @@ pub fn check_login() -> AzLoginState {
 /// Opens `az login` (non-blocking) so the desktop app doesn't have to embed
 /// its own OAuth flow.
 pub fn open_login() -> Result<(), String> {
-    az_command(&["login"])
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                "Azure CLI ('az') not found on PATH.".to_string()
-            } else {
-                format!("Failed to start 'az login': {e}")
-            }
-        })
+    az_command(&["login"]).spawn().map(|_| ()).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "Azure CLI ('az') not found on PATH.".to_string()
+        } else {
+            format!("Failed to start 'az login': {e}")
+        }
+    })
 }
 
 fn list_subscription_ids() -> Result<Vec<String>, String> {
@@ -107,13 +110,19 @@ pub fn list_workspaces() -> Result<Vec<Workspace>, String> {
     let mut workspaces = Vec::new();
     for sub_id in sub_ids {
         let output = az_command(&[
-                "monitor", "log-analytics", "workspace", "list",
-                "--subscription", sub_id.as_str(),
-                "--query", "[].{name:name,resourceGroup:resourceGroup,customerId:customerId}",
-                "--output", "json",
-            ])
-            .output()
-            .map_err(|e| format!("az monitor log-analytics workspace list failed: {e}"))?;
+            "monitor",
+            "log-analytics",
+            "workspace",
+            "list",
+            "--subscription",
+            sub_id.as_str(),
+            "--query",
+            "[].{name:name,resourceGroup:resourceGroup,customerId:customerId}",
+            "--output",
+            "json",
+        ])
+        .output()
+        .map_err(|e| format!("az monitor log-analytics workspace list failed: {e}"))?;
         if !output.status.success() {
             // A subscription the caller can't read (PIM not activated, etc.)
             // shouldn't block discovery in the others.
@@ -133,9 +142,17 @@ pub fn list_workspaces() -> Result<Vec<Workspace>, String> {
 /// The signed-in user's Entra object id — needed as the assignee for a role
 /// assignment.
 fn signed_in_principal_id() -> Result<String, String> {
-    let output = az_command(&["ad", "signed-in-user", "show", "--query", "id", "--output", "tsv"])
-        .output()
-        .map_err(|e| format!("az ad signed-in-user show failed: {e}"))?;
+    let output = az_command(&[
+        "ad",
+        "signed-in-user",
+        "show",
+        "--query",
+        "id",
+        "--output",
+        "tsv",
+    ])
+    .output()
+    .map_err(|e| format!("az ad signed-in-user show failed: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -152,15 +169,22 @@ fn signed_in_principal_id() -> Result<String, String> {
 pub fn grant_self_log_analytics_reader(workspace: &Workspace) -> Result<(), String> {
     let principal_id = signed_in_principal_id()?;
     let output = az_command(&[
-            "role", "assignment", "create",
-            "--subscription", &workspace.subscription_id,
-            "--role", "Log Analytics Reader",
-            "--assignee-object-id", &principal_id,
-            "--assignee-principal-type", "User",
-            "--scope", &workspace.resource_id(),
-        ])
-        .output()
-        .map_err(|e| format!("az role assignment create failed: {e}"))?;
+        "role",
+        "assignment",
+        "create",
+        "--subscription",
+        &workspace.subscription_id,
+        "--role",
+        "Log Analytics Reader",
+        "--assignee-object-id",
+        &principal_id,
+        "--assignee-principal-type",
+        "User",
+        "--scope",
+        &workspace.resource_id(),
+    ])
+    .output()
+    .map_err(|e| format!("az role assignment create failed: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -219,20 +243,25 @@ fn find_site(subscription: &str, name: &str) -> Option<String> {
         return None;
     }
     let output = az_command(&[
-        "resource", "list",
-        "--name", name,
-        "--resource-type", "Microsoft.Web/sites",
-        "--subscription", subscription,
-        "--query", "[].id",
-        "--output", "json",
+        "resource",
+        "list",
+        "--name",
+        name,
+        "--resource-type",
+        "Microsoft.Web/sites",
+        "--subscription",
+        subscription,
+        "--query",
+        "[].id",
+        "--output",
+        "json",
     ])
     .output()
     .ok()?;
     if !output.status.success() {
         return None;
     }
-    let ids: Vec<String> =
-        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).ok()?;
+    let ids: Vec<String> = serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).ok()?;
     ids.into_iter().next()
 }
 
@@ -248,9 +277,8 @@ fn site_key_vault_refs(app: &str, resource_id: &str) -> Result<Vec<KeyVaultRef>,
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
-    let body: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
-            .map_err(|e| format!("parse: {e}"))?;
+    let body: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+        .map_err(|e| format!("parse: {e}"))?;
     Ok(parse_config_references(app, &body))
 }
 
@@ -406,7 +434,10 @@ mod tests {
     #[test]
     fn resolution_status_is_matched_case_insensitively() {
         let r = |s: &str| KeyVaultRef {
-            app: "a".into(), setting: "s".into(), status: s.into(), details: String::new(),
+            app: "a".into(),
+            setting: "s".into(),
+            status: s.into(),
+            details: String::new(),
         };
         assert!(r("Resolved").resolved());
         assert!(r("resolved").resolved());

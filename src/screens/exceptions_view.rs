@@ -48,7 +48,10 @@ pub fn ExceptionsView(props: ExceptionsViewProps) -> Element {
     }
 
     let groups = props.groups.clone();
-    let recurring = groups.iter().filter(|g| g.cadence.is_some_and(|c| c.regular)).count();
+    let recurring = groups
+        .iter()
+        .filter(|g| g.cadence.is_some_and(|c| c.regular))
+        .count();
 
     rsx! {
         div {

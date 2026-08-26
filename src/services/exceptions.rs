@@ -114,9 +114,7 @@ pub async fn recurring(
     // matters more than a noisier one-off spike.
     groups.sort_by(|a, b| {
         let regular = |g: &Group| g.cadence.is_some_and(|c| c.regular);
-        regular(b)
-            .cmp(&regular(a))
-            .then(b.count.cmp(&a.count))
+        regular(b).cmp(&regular(a)).then(b.count.cmp(&a.count))
     });
     Ok(groups)
 }
@@ -174,7 +172,11 @@ fn build(row: &Value) -> Group {
     let times: Vec<i64> = row
         .get("Times")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(crate::services::trace::parse_time).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(crate::services::trace::parse_time)
+                .collect()
+        })
         .unwrap_or_default();
 
     let mut group = Group {
@@ -323,11 +325,19 @@ pub fn human_gap(secs: f64) -> String {
         s if s < 90 => format!("{s}s"),
         s if s < 3600 => {
             let (m, r) = (s / 60, s % 60);
-            if r == 0 { format!("{m}m") } else { format!("{m}m {r}s") }
+            if r == 0 {
+                format!("{m}m")
+            } else {
+                format!("{m}m {r}s")
+            }
         }
         s => {
             let (h, m) = (s / 3600, (s % 3600) / 60);
-            if m == 0 { format!("{h}h") } else { format!("{h}h {m}m") }
+            if m == 0 {
+                format!("{h}h")
+            } else {
+                format!("{h}h {m}m")
+            }
         }
     }
 }
@@ -370,8 +380,10 @@ mod tests {
 
     #[test]
     fn a_failed_listener_is_named_as_such() {
-        let hints = classify(&group("System.InvalidOperationException",
-                                    "The listener for function 'X' was unable to start."));
+        let hints = classify(&group(
+            "System.InvalidOperationException",
+            "The listener for function 'X' was unable to start.",
+        ));
         assert_eq!(hints[0].kind, HintKind::Cause);
         assert!(hints[0].text.contains("failed to initialise"));
     }
@@ -385,7 +397,10 @@ mod tests {
             "Format of the initialization string does not conform to specification \
              starting at index 0. (Parameter 'DbConnectionOptions')",
         ));
-        assert!(hints.iter().any(|h| h.text.contains("Key Vault")), "{hints:?}");
+        assert!(
+            hints.iter().any(|h| h.text.contains("Key Vault")),
+            "{hints:?}"
+        );
     }
 
     #[test]
@@ -403,7 +418,11 @@ mod tests {
         let hints = classify(&g);
         let shared = hints.iter().find(|h| h.kind == HintKind::Shared).unwrap();
         assert!(shared.text.contains("3 apps"), "{}", shared.text);
-        assert!(shared.text.contains("not 3 separate bugs"), "{}", shared.text);
+        assert!(
+            shared.text.contains("not 3 separate bugs"),
+            "{}",
+            shared.text
+        );
     }
 
     #[test]
@@ -504,7 +523,10 @@ mod tests {
 
     #[test]
     fn a_workspace_without_app_insights_is_recognised() {
-        assert!(has_table_named(&["AppTraces".into(), "AppExceptions".into()]));
+        assert!(has_table_named(&[
+            "AppTraces".into(),
+            "AppExceptions".into()
+        ]));
         // No App Insights: the view must say so rather than show "nothing
         // is failing", which would be a very different claim.
         assert!(!has_table_named(&["Syslog".into(), "Heartbeat".into()]));

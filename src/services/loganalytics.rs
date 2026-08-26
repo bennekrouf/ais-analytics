@@ -605,11 +605,7 @@ mod tests {
         let text = describe_failure(reqwest::StatusCode::FORBIDDEN, &denied, None);
         assert!(text.contains("Log Analytics Reader"), "got: {text}");
 
-        let throttled = describe_failure(
-            reqwest::StatusCode::TOO_MANY_REQUESTS,
-            "{}",
-            Some("42"),
-        );
+        let throttled = describe_failure(reqwest::StatusCode::TOO_MANY_REQUESTS, "{}", Some("42"));
         assert!(throttled.contains("42"), "got: {throttled}");
     }
 
@@ -623,6 +619,9 @@ mod tests {
                 "message": "the innermost and only useful message"
             }
         });
-        assert_eq!(api_error_message(&error), "the innermost and only useful message");
+        assert_eq!(
+            api_error_message(&error),
+            "the innermost and only useful message"
+        );
     }
 }

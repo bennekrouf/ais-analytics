@@ -16,7 +16,9 @@
 //! trace is a handful of round-trips regardless of how many lanes it spans.
 
 use crate::services::discover::KeyCandidate;
-use crate::services::loganalytics::{Client, TimeRange, column_ref, kql_string, let_literal, table_ref};
+use crate::services::loganalytics::{
+    Client, TimeRange, column_ref, kql_string, let_literal, table_ref,
+};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -563,13 +565,7 @@ fn regroup(table_lanes: Vec<Lane>, lane_field: &str, expected_lanes: &[String]) 
     lanes
 }
 
-fn build_block(
-    doc: &Value,
-    spec: &TraceSpec,
-    table: &str,
-    key_field: &str,
-    id: &str,
-) -> Block {
+fn build_block(doc: &Value, spec: &TraceSpec, table: &str, key_field: &str, id: &str) -> Block {
     let at = if spec.time_field.is_empty() {
         None
     } else {
@@ -782,7 +778,10 @@ mod tests {
     /// declared string has to be coerced before comparison.
     #[test]
     fn non_string_columns_are_coerced_before_comparison() {
-        assert_eq!(predicate("OperationId", "string", false), "['OperationId'] == v");
+        assert_eq!(
+            predicate("OperationId", "string", false),
+            "['OperationId'] == v"
+        );
         assert_eq!(
             predicate("RequestId", "guid", false),
             "tostring(['RequestId']) == v"
@@ -800,7 +799,10 @@ mod tests {
 
     #[test]
     fn fragment_search_falls_back_to_a_substring_scan() {
-        assert_eq!(predicate("OperationId", "string", true), "['OperationId'] contains v");
+        assert_eq!(
+            predicate("OperationId", "string", true),
+            "['OperationId'] contains v"
+        );
     }
 
     /// The injection case, end to end: a pasted value that tries to close
@@ -906,7 +908,11 @@ mod tests {
             ],
         };
 
-        let relaned = relane(&base, "stage", &["Validate".into(), "Invoice".into(), "Archive".into()]);
+        let relaned = relane(
+            &base,
+            "stage",
+            &["Validate".into(), "Invoice".into(), "Archive".into()],
+        );
         let names: Vec<&str> = relaned.lanes.iter().map(|l| l.name.as_str()).collect();
         assert!(names.contains(&"Validate"));
         assert!(names.contains(&"Invoice"));
@@ -915,7 +921,10 @@ mod tests {
         assert!(names.contains(&"Archive"));
         // A failure must not be folded into "nothing here".
         assert!(
-            relaned.lanes.iter().any(|l| l.state == LaneState::Failed(0)),
+            relaned
+                .lanes
+                .iter()
+                .any(|l| l.state == LaneState::Failed(0)),
             "a failed lane must survive regrouping"
         );
         // Empty axis is the identity, so the choice is reversible.
@@ -1011,7 +1020,11 @@ mod tests {
         let names: Vec<&str> = block.facts.iter().map(|(n, _)| n.as_str()).collect();
         // Chosen facts come first, spelled as the workspace spells them
         // rather than as the lowercased id they were matched by.
-        assert_eq!(names.first(), Some(&"SeverityLevel"), "chosen facts come first");
+        assert_eq!(
+            names.first(),
+            Some(&"SeverityLevel"),
+            "chosen facts come first"
+        );
         // The injected lane column and workspace boilerplate are not facts.
         assert!(!names.contains(&"__ais_lane"));
         assert!(!names.contains(&"TenantId"));
@@ -1043,7 +1056,13 @@ mod tests {
             fact_fields: vec![],
             range: TimeRange::LastHour,
         };
-        let block = build_block(&json!({"OperationId": "abc"}), &spec, "MyApp_CL", "OperationId", "x");
+        let block = build_block(
+            &json!({"OperationId": "abc"}),
+            &spec,
+            "MyApp_CL",
+            "OperationId",
+            "x",
+        );
         assert_eq!(block.label, "MyApp_CL");
         assert_eq!(block.at_text, "");
     }

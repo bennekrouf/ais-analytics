@@ -378,8 +378,11 @@ fn build_candidate(nodes: &[Node], members: &[usize], all_paths: &[String]) -> K
     let reach = bindings.len();
     let count = best_per_table.len().max(1) as f32;
     let avg_fill = best_per_table.values().map(|n| n.fill).sum::<f32>() / count;
-    let avg_distinct_ratio =
-        best_per_table.values().map(|n| n.distinct_ratio).sum::<f32>() / count;
+    let avg_distinct_ratio = best_per_table
+        .values()
+        .map(|n| n.distinct_ratio)
+        .sum::<f32>()
+        / count;
     let id_shaped = best_per_table.values().filter(|n| n.id_shaped).count() * 2 > reach;
     let well_known = best_per_table.values().any(|n| n.well_known);
     let name_hint = best_per_table
@@ -690,8 +693,10 @@ fn time_shaped(v: &str) -> bool {
     }
     match v.parse::<i64>() {
         // ~2001-09-09 to ~2096 in seconds, same window in milliseconds.
-        Ok(n) => (1_000_000_000..=4_000_000_000).contains(&n)
-            || (1_000_000_000_000..=4_000_000_000_000).contains(&n),
+        Ok(n) => {
+            (1_000_000_000..=4_000_000_000).contains(&n)
+                || (1_000_000_000_000..=4_000_000_000_000).contains(&n)
+        }
         Err(_) => false,
     }
 }
@@ -699,7 +704,13 @@ fn time_shaped(v: &str) -> bool {
 /// A weak, convention-based hint — never decisive on its own.
 fn name_suggests_identifier(lower: &str) -> bool {
     const HINTS: [&str; 7] = [
-        "correlation", "trace", "requestid", "conversation", "session", "flowid", "operation",
+        "correlation",
+        "trace",
+        "requestid",
+        "conversation",
+        "session",
+        "flowid",
+        "operation",
     ];
     HINTS.iter().any(|h| lower.contains(h))
 }
@@ -827,11 +838,17 @@ mod tests {
         let schemas = vec![
             table(
                 "AppRequests",
-                vec![field("OperationId", &ids), field("Level", &["a", "a", "b", "b"])],
+                vec![
+                    field("OperationId", &ids),
+                    field("Level", &["a", "a", "b", "b"]),
+                ],
             ),
             table(
                 "AppTraces",
-                vec![field("OperationId", &ids), field("Level", &["a", "b", "b", "a"])],
+                vec![
+                    field("OperationId", &ids),
+                    field("Level", &["a", "b", "b", "a"]),
+                ],
             ),
         ];
 
@@ -863,14 +880,18 @@ mod tests {
         let ids = uuids();
         let schemas = vec![
             table("AppRequests", vec![field("OperationId", &ids)]),
-            table("AzureDiagnostics", vec![field("Properties.OperationId", &ids)]),
+            table(
+                "AzureDiagnostics",
+                vec![field("Properties.OperationId", &ids)],
+            ),
         ];
 
         let insights = analyze(&schemas);
         let best = &insights.keys[0];
         assert_eq!(best.bindings.len(), 2);
         assert_eq!(
-            best.binding_for("AzureDiagnostics").map(|b| b.field.as_str()),
+            best.binding_for("AzureDiagnostics")
+                .map(|b| b.field.as_str()),
             Some("Properties.OperationId")
         );
     }
@@ -912,7 +933,9 @@ mod tests {
         let best = &analyze(&schemas).keys[0];
         assert!(best.well_known);
         assert!(
-            best.evidence.iter().any(|e| e.text.contains("standard Azure Monitor")),
+            best.evidence
+                .iter()
+                .any(|e| e.text.contains("standard Azure Monitor")),
             "the prior must be stated, not silently applied"
         );
     }
@@ -1001,7 +1024,10 @@ mod tests {
                 "AppTraces",
                 vec![field("workflowName", &["Validate", "Invoice", "Validate"])],
             ),
-            table("MyApp_CL", vec![field("WorkflowName", &["Validate", "Archive"])]),
+            table(
+                "MyApp_CL",
+                vec![field("WorkflowName", &["Validate", "Archive"])],
+            ),
         ];
 
         assert_eq!(
@@ -1024,7 +1050,10 @@ mod tests {
             distinct: 2,
             values: ["200", "500"].iter().map(|s| s.to_string()).collect(),
         };
-        let schemas = vec![table("AppRequests", vec![numeric, field("OperationId", &uuids())])];
+        let schemas = vec![table(
+            "AppRequests",
+            vec![numeric, field("OperationId", &uuids())],
+        )];
 
         let offered = scalar_fields(&schemas);
         let ids: Vec<&str> = offered.iter().map(|f| f.id.as_str()).collect();
@@ -1055,11 +1084,17 @@ mod tests {
         let schemas = vec![
             table(
                 "A_CL",
-                vec![field("left", &["9f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f", "unique-to-a-11111"])],
+                vec![field(
+                    "left",
+                    &["9f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f", "unique-to-a-11111"],
+                )],
             ),
             table(
                 "B_CL",
-                vec![field("right", &["9f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f", "unique-to-b-22222"])],
+                vec![field(
+                    "right",
+                    &["9f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f", "unique-to-b-22222"],
+                )],
             ),
         ];
         let insights = analyze(&schemas);
@@ -1099,15 +1134,23 @@ mod tests {
     #[test]
     fn the_same_column_name_links_tables_on_its_own() {
         let schemas = vec![
-            table("A_CL", vec![field("job_ref", &["only-in-a-1111", "only-in-a-2222"])]),
-            table("B_CL", vec![field("job_ref", &["only-in-b-1111", "only-in-b-2222"])]),
+            table(
+                "A_CL",
+                vec![field("job_ref", &["only-in-a-1111", "only-in-a-2222"])],
+            ),
+            table(
+                "B_CL",
+                vec![field("job_ref", &["only-in-b-1111", "only-in-b-2222"])],
+            ),
         ];
         let best = &analyze(&schemas).keys[0];
         assert_eq!(best.bindings.len(), 2);
         // Named the same, but nothing proves they carry the same ids.
         assert_eq!(best.shared_values, 0);
         assert!(
-            best.evidence.iter().any(|e| !e.good && e.text.contains("unproven")),
+            best.evidence
+                .iter()
+                .any(|e| !e.good && e.text.contains("unproven")),
             "an unproven link must say so"
         );
     }
@@ -1120,7 +1163,11 @@ mod tests {
                 typed(
                     "TimeGenerated",
                     "datetime",
-                    &["2026-01-04T10:00:00Z", "2026-01-04T10:05:00Z", "2026-01-05T09:00:00Z"],
+                    &[
+                        "2026-01-04T10:00:00Z",
+                        "2026-01-04T10:05:00Z",
+                        "2026-01-05T09:00:00Z",
+                    ],
                 ),
                 field("SeverityLevel", &["Information", "Warning", "Error"]),
             ],

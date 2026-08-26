@@ -257,16 +257,14 @@ pub fn Home(props: HomeProps) -> Element {
                         return;
                     }
                 };
-                match exceptions::recurring(
-                    &client, &id, range, exceptions::DEFAULT_MIN_COUNT,
-                ).await {
+                match exceptions::recurring(&client, &id, range, exceptions::DEFAULT_MIN_COUNT)
+                    .await
+                {
                     Ok(found) => {
                         // Only the apps that actually appear in a failure are
                         // worth a control-plane round-trip.
-                        let apps: BTreeSet<String> = found
-                            .iter()
-                            .flat_map(|g| g.roles.iter().cloned())
-                            .collect();
+                        let apps: BTreeSet<String> =
+                            found.iter().flat_map(|g| g.roles.iter().cloned()).collect();
                         issues.set(found);
                         issues_state.set(LoadState::Done);
 
@@ -288,7 +286,8 @@ pub fn Home(props: HomeProps) -> Element {
         }
     };
 
-    let is_forbidden = matches!(&*state.read(), LoadState::Failed(e) if e.contains("access denied"));
+    let is_forbidden =
+        matches!(&*state.read(), LoadState::Failed(e) if e.contains("access denied"));
 
     let on_setup = *tab.read() == Tab::Setup;
     let on_issues = *tab.read() == Tab::Issues;
@@ -319,12 +318,12 @@ pub fn Home(props: HomeProps) -> Element {
         .clone()
         .filter(|_| *tab.read() == Tab::Trace)
         .and_then(|id| {
-        traced
-            .read()
-            .as_ref()
-            // The card's own table, not the lane — once lanes are column
-            // values the two are different things.
-            .and_then(|t| t.find_block(&id).map(|(_, b)| (b.table.clone(), b.clone())))
+            traced
+                .read()
+                .as_ref()
+                // The card's own table, not the lane — once lanes are column
+                // values the two are different things.
+                .and_then(|t| t.find_block(&id).map(|(_, b)| (b.table.clone(), b.clone())))
         });
 
     rsx! {
@@ -693,7 +692,12 @@ impl Follow {
             else {
                 return;
             };
-            let facts = insights.labels.iter().take(6).map(|c| c.id.clone()).collect();
+            let facts = insights
+                .labels
+                .iter()
+                .take(6)
+                .map(|c| c.id.clone())
+                .collect();
             (key, insights.tables.clone(), facts)
         };
 
@@ -917,7 +921,11 @@ fn TraceSetup(props: TraceSetupProps) -> Element {
                     "{}/{} tables{}",
                     c.bindings.len(),
                     total,
-                    if c.shared_values > 0 { ", values match" } else { "" },
+                    if c.shared_values > 0 {
+                        ", values match"
+                    } else {
+                        ""
+                    },
                 ),
                 haystack,
             }
@@ -1116,10 +1124,7 @@ fn FollowValue(props: FollowValueProps) -> Element {
     let ready = !value.read().trim().is_empty() && !props.disabled;
     // Suppress the list once the box already holds one of its own suggestions
     // — otherwise picking one leaves a dropdown offering the thing you picked.
-    let exact_already = props
-        .suggestions
-        .iter()
-        .any(|s| *s == *value.read().trim());
+    let exact_already = props.suggestions.iter().any(|s| *s == *value.read().trim());
 
     let submit = move |_| {
         let v = value.read().trim().to_string();
@@ -1224,7 +1229,6 @@ fn shorten(value: &str) -> String {
     let tail: String = chars[chars.len() - 6..].iter().collect();
     format!("{head}…{tail}")
 }
-
 
 #[derive(Props, Clone, PartialEq)]
 struct ErrorRulesProps {
@@ -1416,7 +1420,11 @@ struct TableListProps {
 #[component]
 fn TableList(props: TableListProps) -> Element {
     let mut open = use_signal(BTreeSet::<String>::new);
-    let paths: Vec<String> = props.schemas.iter().map(schema::TableSchema::path).collect();
+    let paths: Vec<String> = props
+        .schemas
+        .iter()
+        .map(schema::TableSchema::path)
+        .collect();
     let all_open = !paths.is_empty() && paths.iter().all(|p| open.read().contains(p));
     let with_data = props.schemas.iter().filter(|s| s.rows_in_range > 0).count();
 
@@ -1577,7 +1585,10 @@ mod tests {
     /// and any of them is a reasonable thing to search for.
     #[test]
     fn a_key_is_findable_by_any_name_it_goes_by() {
-        let o = option("AppRequests\u{1}OperationId", "operationid job_ref_g apprequests myapp_cl");
+        let o = option(
+            "AppRequests\u{1}OperationId",
+            "operationid job_ref_g apprequests myapp_cl",
+        );
         assert!(shows(&o, "job_ref", ""));
         assert!(shows(&o, "myapp", ""));
         assert!(shows(&o, "operationid", ""));
