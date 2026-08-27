@@ -326,7 +326,7 @@ jobs:
             "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
           ) | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $iscc) { Write-Error "ISCC.exe not found" }
-          $version = "${{ github.ref_name }}".TrimStart("v")
+          $version = "${{ needs.prepare.outputs.tag || github.ref_name }}".TrimStart("v")
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           & $iscc /DMyAppVersion=$version installer\installer.iss
           # Inno emits a versionless filename so the "/releases/latest/download/"
@@ -440,7 +440,7 @@ jobs:
             ais-analytics-linux-x86_64.tar.gz.sha256
 
   release:
-    needs: [build-mac, build-windows, build-linux]
+    needs: [prepare, build-mac, build-windows, build-linux]
     # Publish whatever built. A platform that failed must not take the others
     # down with it — that is how three green artifacts ended up unreleased.
     if: always() && !cancelled()
@@ -460,7 +460,7 @@ jobs:
         id: stage
         env:
           REPO: ${{ github.repository }}
-          TAG:  ${{ github.ref_name }}
+          TAG:  ${{ needs.prepare.outputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           mkdir -p release
@@ -517,7 +517,7 @@ jobs:
       - name: Compose release notes
         env:
           REPO: ${{ github.repository }}
-          TAG:  ${{ github.ref_name }}
+          TAG:  ${{ needs.prepare.outputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           {
@@ -573,7 +573,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="${{ github.ref_name }}"
+          TAG="${{ needs.prepare.outputs.tag || github.ref_name }}"
           FILES=$(find artifacts -type f | tr '\n' ' ')
 
           # `--latest` forces this release to be flagged "Latest" in the GitHub
