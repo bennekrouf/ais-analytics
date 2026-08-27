@@ -2,6 +2,7 @@
 name = "ais-analytics"
 version = "0.1.10"
 edition = "2024"
+license-file = "LICENSE"
 
 [dependencies]
 arboard = "3"
