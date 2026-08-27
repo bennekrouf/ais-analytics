@@ -6,9 +6,12 @@
 
 use serde::Deserialize;
 
-const LATEST_URL: &str =
-    "https://github.com/bennekrouf/ais-analytics/releases/latest/download/latest.json";
-const RELEASES_URL: &str = "https://github.com/bennekrouf/ais-analytics/releases/latest";
+/// Served from mayorana.ch alongside the builds it describes, so update
+/// checks do not depend on the source repository staying publicly readable.
+const LATEST_URL: &str = "https://mayorana.ch/downloads/ais-analytics/latest/latest.json";
+/// Where the user is sent to get the new version. The binaries are
+/// distributed from mayorana.ch, not from GitHub.
+const RELEASES_URL: &str = "https://mayorana.ch/en/apps";
 
 #[derive(Debug, Deserialize)]
 struct LatestJson {

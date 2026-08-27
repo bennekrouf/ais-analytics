@@ -19,18 +19,18 @@ Downloads are on the [latest release](https://github.com/bennekrouf/ais-analytic
 
 ### macOS (Apple Silicon)
 
-Download [`ais-analytics-macos-arm64.dmg`](https://github.com/bennekrouf/ais-analytics/releases/latest/download/ais-analytics-macos-arm64.dmg),
+Download [`ais-analytics-macos-arm64.dmg`](https://mayorana.ch/downloads/ais-analytics/latest/ais-analytics-macos-arm64.dmg),
 open it, drag **AIS Analytics** to Applications.
 
 ### Windows
 
-Download [`ais-analytics-setup.exe`](https://github.com/bennekrouf/ais-analytics/releases/latest/download/ais-analytics-setup.exe)
+Download [`ais-analytics-setup.exe`](https://mayorana.ch/downloads/ais-analytics/latest/ais-analytics-setup.exe)
 and run it.
 
 ### Linux
 
 ```bash
-curl -L https://github.com/bennekrouf/ais-analytics/releases/latest/download/ais-analytics-linux-x86_64.tar.gz | tar xz
+curl -L https://mayorana.ch/downloads/ais-analytics/latest/ais-analytics-linux-x86_64.tar.gz | tar xz
 cd ais-analytics-linux-x86_64
 ./setup-linux.sh
 ./ais-analytics
