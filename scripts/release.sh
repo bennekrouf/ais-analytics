@@ -13,7 +13,14 @@ set -euo pipefail
 CARGO="Cargo.toml"
 DRY_RUN=false
 
-CURRENT=$(grep '^version' "$CARGO" | head -1 | sed 's/version = "\(.*\)"/\1/')
+CARGO_VERSION=$(grep '^version' "$CARGO" | head -1 | sed 's/version = "\(.*\)"/\1/')
+
+# Base the bump on the highest tag ever pushed, not on Cargo.toml's version on
+# this branch — a release cut elsewhere (a workflow_dispatch run, a branch
+# that never merged back) leaves Cargo.toml stale here, and bumping off it
+# recomputes a tag that already exists.
+LATEST_TAG=$(git tag -l 'v*' | sed 's/^v//' | sort -V | tail -1)
+CURRENT="${LATEST_TAG:-$CARGO_VERSION}"
 IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
 
 case "${1:-}" in
@@ -54,7 +61,7 @@ fi
 echo ""
 echo "  Release plan"
 echo "  ============"
-echo "  Cargo.toml : $CURRENT -> $NEW"
+echo "  Cargo.toml : $CARGO_VERSION -> $NEW"
 echo "  Git tag    : $TAG"
 echo "  Branch     : $(git branch --show-current)"
 echo ""
@@ -79,10 +86,17 @@ else
 fi
 
 # ── Bump + commit + tag ───────────────────────────────────────────────────────
+# Match against CARGO_VERSION (what's literally in the file), not CURRENT
+# (which may come from a tag and differ from this branch's Cargo.toml).
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' "s/^version = \"$CURRENT\"/version = \"$NEW\"/" "$CARGO"
+    sed -i '' "s/^version = \"$CARGO_VERSION\"/version = \"$NEW\"/" "$CARGO"
 else
-    sed -i    "s/^version = \"$CURRENT\"/version = \"$NEW\"/" "$CARGO"
+    sed -i    "s/^version = \"$CARGO_VERSION\"/version = \"$NEW\"/" "$CARGO"
+fi
+
+if ! grep -q "^version = \"$NEW\"" "$CARGO"; then
+    echo "Failed to bump Cargo.toml version ($CARGO_VERSION -> $NEW) — aborting before commit/tag."
+    exit 1
 fi
 
 # Refresh Cargo.lock so its recorded version matches the bump, and commit it
