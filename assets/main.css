@@ -1097,3 +1097,22 @@ table.schema-table tr.key-row:hover td { background: rgba(var(--blue-rgb), 0.16)
 .kv-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 11px; }
 .kv-app { color: var(--text2); }
 .kv-detail { color: var(--text3); }
+
+/* ── Subscriptions that could not be read ──────────────────────────────────
+   Shown whether or not anything was found. A partial scan is still partial,
+   and an empty list from subscriptions nobody could read is not an answer. */
+.skipped-list {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    text-align: left;
+}
+.skipped-row {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    font-size: 11px;
+}
+.skipped-name { color: var(--text2); white-space: nowrap; }
+.skipped-why { color: var(--text3); }

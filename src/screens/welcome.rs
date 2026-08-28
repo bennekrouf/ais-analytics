@@ -17,6 +17,9 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let mut checking = use_signal(|| true);
     let mut workspaces = use_signal(Vec::<Workspace>::new);
     let mut workspaces_error = use_signal(|| Option::<String>::None);
+    // Subscriptions that could not be read. Without these an expired session
+    // is indistinguishable from a tenant with no workspaces.
+    let mut skipped = use_signal(Vec::<az::SubscriptionError>::new);
     let mut loading_workspaces = use_signal(|| false);
     let mut selected_name = use_signal(String::new);
     let mut login_error = use_signal(|| Option::<String>::None);
@@ -26,16 +29,19 @@ pub fn Welcome(props: WelcomeProps) -> Element {
         loading_workspaces.set(true);
         spawn(async move {
             match tokio::task::spawn_blocking(az::list_workspaces).await {
-                Ok(Ok(list)) => {
-                    workspaces.set(list);
+                Ok(Ok(scan)) => {
+                    workspaces.set(scan.workspaces);
+                    skipped.set(scan.errors);
                     workspaces_error.set(None);
                 }
                 Ok(Err(e)) => {
                     workspaces.set(vec![]);
+                    skipped.set(vec![]);
                     workspaces_error.set(Some(e));
                 }
                 Err(e) => {
                     workspaces.set(vec![]);
+                    skipped.set(vec![]);
                     workspaces_error.set(Some(e.to_string()));
                 }
             }
@@ -59,6 +65,14 @@ pub fn Welcome(props: WelcomeProps) -> Element {
 
     let is_logged_in = matches!(*az_state.read(), AzLoginState::LoggedIn { .. });
     let list = workspaces.read().clone();
+    // Every subscription either produced workspaces or produced an error, so
+    // the two together are what was actually looked at.
+    let subscription_count = list
+        .iter()
+        .map(|w| w.subscription_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        + skipped.read().len();
     let can_connect = !selected_name.read().is_empty();
 
     rsx! {
@@ -81,6 +95,23 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                         span { class: "dot ok" }
                                         span { "Connected: {account}" }
                                     }
+                                },
+                                AzLoginState::Expired { account, message } => rsx! {
+                                    div { class: "az-status",
+                                        span { class: "dot error" }
+                                        span { "Session expired: {account}" }
+                                        button {
+                                            class: "btn-primary",
+                                            onclick: move |_| {
+                                                login_error.set(None);
+                                                if let Err(e) = az::open_login() {
+                                                    login_error.set(Some(e));
+                                                }
+                                            },
+                                            "Sign in again"
+                                        }
+                                    }
+                                    p { class: "az-error", style: "margin-top:8px;", "{message}" }
                                 },
                                 AzLoginState::AzNotFound => rsx! {
                                     div { class: "az-status",
@@ -141,7 +172,21 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                             } else if let Some(e) = workspaces_error.read().clone() {
                                 div { class: "az-error", "{e}" }
                             } else if list.is_empty() {
-                                div { class: "az-hint", "No Log Analytics workspaces found in any signed-in subscription." }
+                                // "Nothing found" and "nothing could be read"
+                                // are different claims. Only make the first
+                                // one when every subscription answered.
+                                if skipped.read().is_empty() {
+                                    div { class: "az-hint",
+                                        "No Log Analytics workspaces in any of your "
+                                        "{subscription_count} subscriptions."
+                                    }
+                                } else {
+                                    div { class: "az-error",
+                                        "Could not read {skipped.read().len()} of "
+                                        "{subscription_count} subscriptions, so this is not "
+                                        "an answer about whether you have workspaces."
+                                    }
+                                }
                             } else {
                                 div { class: "az-field",
                                     select {
@@ -153,6 +198,35 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     }
                                 }
                             }
+                            if !skipped.read().is_empty() {
+                                div { class: "skipped-list",
+                                    if skipped.read().iter().any(|e| e.expired) {
+                                        div { class: "az-error",
+                                            "Your Azure session has expired. Sign in again and rescan — "
+                                            "until then these subscriptions cannot be read at all."
+                                            button {
+                                                class: "btn-primary",
+                                                style: "margin-left:10px;",
+                                                onclick: move |_| {
+                                                    login_error.set(None);
+                                                    if let Err(e) = az::open_login() {
+                                                        login_error.set(Some(e));
+                                                    }
+                                                },
+                                                "Sign in again"
+                                            }
+                                        }
+                                    }
+                                    for e in skipped.read().iter() {
+                                        div { class: "skipped-row",
+                                            span { class: "dot error" }
+                                            span { class: "skipped-name", "{e.name}" }
+                                            span { class: "skipped-why", "{e.message}" }
+                                        }
+                                    }
+                                }
+                            }
+
                             div { class: "az-form-actions",
                                 button {
                                     class: "btn-primary",
