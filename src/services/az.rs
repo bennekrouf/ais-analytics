@@ -19,6 +19,13 @@ pub enum AzLoginState {
         account: String,
         subscription_id: String,
     },
+    /// A profile exists, but Azure rejects the refresh token. Distinct from
+    /// `NotLoggedIn` because the symptom is worse: everything looks signed
+    /// in until the first real call quietly returns nothing.
+    Expired {
+        account: String,
+        message: String,
+    },
     NotLoggedIn,
     AzNotFound,
 }
@@ -31,16 +38,41 @@ struct AzAccount {
     id: String,
 }
 
+/// Whether the CLI can actually reach Azure right now.
+///
+/// `az account show` on its own is not enough, and trusting it is what makes
+/// an expired session so confusing: it reads the *local* profile cache and
+/// keeps succeeding long after the refresh token has died. The app then says
+/// "Connected", finds nothing in any subscription, and reports that as an
+/// empty account list. Conditional-access sign-in frequency policies expire
+/// tokens on a fixed schedule, so this is a daily event, not an edge case.
+///
+/// Acquiring a token is the cheapest call that proves the session really
+/// works. `--output none` keeps the token off stdout; there is no reason for
+/// a secret to pass through this process.
 pub fn check_login() -> AzLoginState {
     let out = az_command(&["account", "show", "--output", "json"]).output();
     match out {
         Ok(out) if out.status.success() => {
             let body = String::from_utf8_lossy(&out.stdout);
             match serde_json::from_str::<AzAccount>(&body) {
-                Ok(acc) => AzLoginState::LoggedIn {
-                    account: acc.name,
-                    subscription_id: acc.id,
-                },
+                Ok(acc) => {
+                    match az_command(&["account", "get-access-token", "--output", "none"]).output()
+                    {
+                        Ok(token) if token.status.success() => AzLoginState::LoggedIn {
+                            account: acc.name,
+                            subscription_id: acc.id,
+                        },
+                        Ok(token) => AzLoginState::Expired {
+                            account: acc.name,
+                            message: azure_error_summary(&String::from_utf8_lossy(&token.stderr)).0,
+                        },
+                        Err(e) => AzLoginState::Expired {
+                            account: acc.name,
+                            message: format!("could not acquire a token: {e}"),
+                        },
+                    }
+                }
                 Err(_) => AzLoginState::NotLoggedIn,
             }
         }
@@ -62,15 +94,96 @@ pub fn open_login() -> Result<(), String> {
     })
 }
 
-fn list_subscription_ids() -> Result<Vec<String>, String> {
-    let output = az_command(&["account", "list", "--query", "[].id", "--output", "json"])
-        .output()
-        .map_err(|e| format!("az account list failed: {e}"))?;
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct Subscription {
+    id: String,
+    #[serde(default)]
+    name: String,
+}
+
+fn list_subscriptions() -> Result<Vec<Subscription>, String> {
+    let output = az_command(&[
+        "account",
+        "list",
+        "--query",
+        "[].{id:id,name:name}",
+        "--output",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az account list failed: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     let body = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))
+}
+
+/// A subscription that could not be read, and why.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubscriptionError {
+    pub name: String,
+    pub id: String,
+    pub message: String,
+    /// The session is dead, rather than the permissions being wrong. Worth
+    /// separating: one is fixed by `az login`, the other cannot be fixed by
+    /// the user at all.
+    pub expired: bool,
+}
+
+/// What was found, and what could not be looked at.
+///
+/// The second half is the point. Skipping unreadable subscriptions is right
+/// — one PIM-gated subscription should not block discovery in the others —
+/// but doing it silently turns "your session expired" into "you have no
+/// Log Analytics workspaces", which sends people looking in the wrong place
+/// entirely.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WorkspaceScan {
+    pub workspaces: Vec<Workspace>,
+    pub errors: Vec<SubscriptionError>,
+}
+
+impl WorkspaceScan {
+    /// Nothing could be read anywhere, so an empty result says nothing about
+    /// whether any workspaces exist.
+    pub fn blind(&self) -> bool {
+        self.workspaces.is_empty() && !self.errors.is_empty()
+    }
+
+    pub fn any_expired(&self) -> bool {
+        self.errors.iter().any(|e| e.expired)
+    }
+}
+
+/// Reduces a wall of CLI stderr to one line, and says whether it means the
+/// session has expired.
+///
+/// Azure reports a dead refresh token as `AADSTS70043` (or `700082`) inside
+/// a paragraph that also suggests `az logout`. Neither the code nor the
+/// paragraph is worth showing anyone; "your session expired" is.
+fn azure_error_summary(stderr: &str) -> (String, bool) {
+    let flat = stderr.trim();
+    let expired = flat.contains("AADSTS70043")
+        || flat.contains("AADSTS700082")
+        || flat.contains("AADSTS50173")
+        || flat.contains("refresh token has expired");
+    if expired {
+        return (
+            "Azure session expired — re-run `az login` (conditional access \
+             enforces a sign-in frequency)."
+                .to_string(),
+            true,
+        );
+    }
+    let first = flat
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("unknown error")
+        .trim_start_matches("ERROR:")
+        .trim();
+    (first.chars().take(220).collect(), false)
 }
 
 /// A Log Analytics workspace discovered in the signed-in subscription(s).
@@ -105,17 +218,17 @@ impl Workspace {
 /// in one non-default subscription, so scanning just the current default
 /// misses them. This is an ARM (control-plane) call via `az`, kept separate
 /// from the data-plane queries in `loganalytics.rs`.
-pub fn list_workspaces() -> Result<Vec<Workspace>, String> {
-    let sub_ids = list_subscription_ids()?;
-    let mut workspaces = Vec::new();
-    for sub_id in sub_ids {
+pub fn list_workspaces() -> Result<WorkspaceScan, String> {
+    let subscriptions = list_subscriptions()?;
+    let mut scan = WorkspaceScan::default();
+    for sub in subscriptions {
         let output = az_command(&[
             "monitor",
             "log-analytics",
             "workspace",
             "list",
             "--subscription",
-            sub_id.as_str(),
+            sub.id.as_str(),
             "--query",
             "[].{name:name,resourceGroup:resourceGroup,customerId:customerId}",
             "--output",
@@ -123,20 +236,41 @@ pub fn list_workspaces() -> Result<Vec<Workspace>, String> {
         ])
         .output()
         .map_err(|e| format!("az monitor log-analytics workspace list failed: {e}"))?;
+
+        // A subscription the caller can't read (PIM not activated, an
+        // expired session) must not block discovery in the others — but it
+        // is recorded, because an empty list from a subscription nobody
+        // could read is not evidence of anything.
         if !output.status.success() {
-            // A subscription the caller can't read (PIM not activated, etc.)
-            // shouldn't block discovery in the others.
+            let (message, expired) = azure_error_summary(&String::from_utf8_lossy(&output.stderr));
+            scan.errors.push(SubscriptionError {
+                name: sub.name,
+                id: sub.id,
+                message,
+                expired,
+            });
             continue;
         }
+
         let body = String::from_utf8_lossy(&output.stdout);
-        let mut found: Vec<Workspace> =
-            serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
-        for ws in &mut found {
-            ws.subscription_id = sub_id.clone();
+        match serde_json::from_str::<Vec<Workspace>>(&body) {
+            Ok(mut found) => {
+                for ws in &mut found {
+                    ws.subscription_id = sub.id.clone();
+                }
+                scan.workspaces.extend(found);
+            }
+            // One subscription answering in an unexpected shape is the same
+            // class of problem as one refusing to answer.
+            Err(e) => scan.errors.push(SubscriptionError {
+                name: sub.name,
+                id: sub.id,
+                message: format!("unreadable response: {e}"),
+                expired: false,
+            }),
         }
-        workspaces.extend(found);
     }
-    Ok(workspaces)
+    Ok(scan)
 }
 
 /// The signed-in user's Entra object id — needed as the assignee for a role
@@ -442,5 +576,90 @@ mod tests {
         assert!(r("Resolved").resolved());
         assert!(r("resolved").resolved());
         assert!(!r("InitializationError").resolved());
+    }
+
+    /// The failure that made this necessary: a wall of AADSTS text meaning
+    /// one simple thing, which the app used to discard entirely.
+    #[test]
+    fn an_expired_refresh_token_is_recognised_and_summarised() {
+        let stderr = "ERROR: AADSTS70043: The refresh token has expired or is invalid \
+                      due to sign-in frequency checks by conditional access.\n\
+                      Run the command below to authenticate interactively:\n\
+                      az logout\naz login --tenant \"...\"";
+        let (message, expired) = azure_error_summary(stderr);
+        assert!(expired);
+        assert!(message.contains("session expired"), "got: {message}");
+        // Trace ids and the az logout advice are noise to the user.
+        assert!(!message.contains("AADSTS"), "got: {message}");
+        assert!(!message.contains("az logout"), "got: {message}");
+    }
+
+    #[test]
+    fn other_failures_keep_their_own_first_line() {
+        let (message, expired) = azure_error_summary(
+            "ERROR: (AuthorizationFailed) The client does not have authorization \
+             to perform action over scope.\nmore detail here",
+        );
+        assert!(!expired, "a permissions problem is not an expired session");
+        assert!(
+            message.starts_with("(AuthorizationFailed)"),
+            "got: {message}"
+        );
+        assert!(!message.contains("more detail"), "one line only");
+    }
+
+    #[test]
+    fn an_empty_stderr_still_yields_something_printable() {
+        let (message, expired) = azure_error_summary("   \n  ");
+        assert!(!expired);
+        assert_eq!(message, "unknown error");
+    }
+
+    /// The distinction the whole fix rests on: an empty result from
+    /// subscriptions that all answered means something, and an empty result
+    /// from subscriptions nobody could read means nothing.
+    #[test]
+    fn an_unreadable_scan_is_not_an_empty_one() {
+        let failed = WorkspaceScan {
+            workspaces: vec![],
+            errors: vec![SubscriptionError {
+                name: "prod".into(),
+                id: "sub-1".into(),
+                message: "session expired".into(),
+                expired: true,
+            }],
+        };
+        assert!(failed.blind());
+        assert!(failed.any_expired());
+
+        let genuinely_empty = WorkspaceScan::default();
+        assert!(!genuinely_empty.blind());
+        assert!(!genuinely_empty.any_expired());
+    }
+
+    /// One subscription failing must not hide the workspaces found in
+    /// others, but it must still be reported.
+    #[test]
+    fn a_partial_scan_reports_both_halves() {
+        let partial = WorkspaceScan {
+            workspaces: vec![Workspace {
+                name: "law-prod".into(),
+                resource_group: "rg".into(),
+                customer_id: "guid".into(),
+                subscription_id: "sub-1".into(),
+            }],
+            errors: vec![SubscriptionError {
+                name: "locked".into(),
+                id: "sub-2".into(),
+                message: "PIM not activated".into(),
+                expired: false,
+            }],
+        };
+        assert!(
+            !partial.blind(),
+            "something was found, so this is not blind"
+        );
+        assert!(!partial.any_expired());
+        assert_eq!(partial.errors.len(), 1, "the skipped one is still reported");
     }
 }
