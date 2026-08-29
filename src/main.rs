@@ -10,6 +10,10 @@ use services::az::Workspace;
 const MAIN_CSS: &str = include_str!("../assets/main.css");
 
 fn main() {
+    // Before anything can shell out: an app launched from Finder or a .dmg
+    // does not inherit the terminal's PATH, so `az` reads as "not found".
+    services::env::adopt_login_path();
+
     if std::env::var("RUST_LOG").is_err() {
         // SAFETY: single-threaded, before any other threads (e.g. tokio) start.
         unsafe {
