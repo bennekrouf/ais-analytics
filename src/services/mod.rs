@@ -1,6 +1,7 @@
 pub mod az;
 pub mod cache;
 pub mod discover;
+pub mod env;
 pub mod exceptions;
 pub mod history;
 pub mod loganalytics;
