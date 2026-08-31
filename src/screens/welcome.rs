@@ -11,6 +11,47 @@ pub struct WelcomeProps {
 /// screen: check `az login`, offer to connect if not signed in, then let
 /// the user pick the resource to work with — here a Log Analytics
 /// workspace instead of a Cosmos DB account.
+/// Opens `az login` and waits for it to take effect.
+///
+/// `az login` is spawned, not awaited — the sign-in happens in a browser, so
+/// the app only learns it worked by asking again. A button without this poll
+/// leaves the screen saying "session expired" after a *successful* sign-in,
+/// with no way forward. One implementation, called from every sign-in button,
+/// so they cannot drift apart again.
+fn start_login<F>(
+    mut az_state: Signal<AzLoginState>,
+    mut checking: Signal<bool>,
+    mut login_error: Signal<Option<String>>,
+    mut on_signed_in: F,
+) where
+    F: FnMut() + Copy + 'static,
+{
+    login_error.set(None);
+    match az::open_login() {
+        Ok(()) => {
+            checking.set(true);
+            spawn(async move {
+                // Two minutes: long enough for a browser sign-in with MFA,
+                // short enough that an abandoned one stops asking.
+                for _ in 0..24 {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    let state = tokio::task::spawn_blocking(az::check_login)
+                        .await
+                        .unwrap_or(AzLoginState::NotLoggedIn);
+                    let done = matches!(state, AzLoginState::LoggedIn { .. });
+                    az_state.set(state);
+                    checking.set(false);
+                    if done {
+                        on_signed_in();
+                        break;
+                    }
+                }
+            });
+        }
+        Err(e) => login_error.set(Some(e)),
+    }
+}
+
 #[component]
 pub fn Welcome(props: WelcomeProps) -> Element {
     let mut az_state = use_signal(|| AzLoginState::AzNotFound);
@@ -102,12 +143,12 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                         span { "Session expired: {account}" }
                                         button {
                                             class: "btn-primary",
-                                            onclick: move |_| {
-                                                login_error.set(None);
-                                                if let Err(e) = az::open_login() {
-                                                    login_error.set(Some(e));
-                                                }
-                                            },
+                                            onclick: move |_| start_login(
+                                                az_state,
+                                                checking,
+                                                login_error,
+                                                load_workspaces,
+                                            ),
                                             "Sign in again"
                                         }
                                     }
@@ -127,29 +168,12 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             span { "Not signed in" }
                                             button {
                                                 class: "btn-primary",
-                                                onclick: move |_| {
-                                                    login_error.set(None);
-                                                    match az::open_login() {
-                                                        Ok(()) => {
-                                                            checking.set(true);
-                                                            spawn(async move {
-                                                                for _ in 0..24 {
-                                                                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                                                                    let state = tokio::task::spawn_blocking(az::check_login).await
-                                                                        .unwrap_or(AzLoginState::NotLoggedIn);
-                                                                    let done = matches!(state, AzLoginState::LoggedIn { .. });
-                                                                    az_state.set(state);
-                                                                    checking.set(false);
-                                                                    if done {
-                                                                        load_workspaces();
-                                                                        break;
-                                                                    }
-                                                                }
-                                                            });
-                                                        }
-                                                        Err(e) => login_error.set(Some(e)),
-                                                    }
-                                                },
+                                                onclick: move |_| start_login(
+                                                    az_state,
+                                                    checking,
+                                                    login_error,
+                                                    load_workspaces,
+                                                ),
                                                 "Connect to Azure"
                                             }
                                         }
@@ -207,12 +231,12 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             button {
                                                 class: "btn-primary",
                                                 style: "margin-left:10px;",
-                                                onclick: move |_| {
-                                                    login_error.set(None);
-                                                    if let Err(e) = az::open_login() {
-                                                        login_error.set(Some(e));
-                                                    }
-                                                },
+                                                onclick: move |_| start_login(
+                                                    az_state,
+                                                    checking,
+                                                    login_error,
+                                                    load_workspaces,
+                                                ),
                                                 "Sign in again"
                                             }
                                         }
