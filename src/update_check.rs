@@ -15,6 +15,13 @@ const LATEST_URL: &str = "https://mayorana.ch/downloads/ais-analytics/latest/lat
 /// instead of at a link that would 404.
 const RELEASES_URL: &str = "https://mayorana.ch/en/apps";
 
+/// Sent on the update check so the download logs can tell a new install
+/// (a browser hitting the site) from an existing user updating. Also
+/// carries the version, which is what makes per-version adoption
+/// visible — the number that says how many people are still on a build
+/// with a bug that is already fixed.
+const USER_AGENT: &str = concat!("ais-analytics/", env!("CARGO_PKG_VERSION"), " (updater)");
+
 #[derive(Debug, Deserialize)]
 struct LatestJson {
     version: String,
@@ -57,6 +64,7 @@ pub async fn check() -> Option<UpdateInfo> {
     let current = env!("CARGO_PKG_VERSION");
     let body = reqwest::Client::new()
         .get(LATEST_URL)
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
