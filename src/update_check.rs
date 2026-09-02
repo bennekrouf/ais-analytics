@@ -5,18 +5,35 @@
 //! cheap and side-effect-free so it can run in the background at startup.
 
 use serde::Deserialize;
+use std::collections::HashMap;
 
 /// Served from mayorana.ch alongside the builds it describes, so update
 /// checks do not depend on the source repository staying publicly readable.
 const LATEST_URL: &str = "https://mayorana.ch/downloads/ais-analytics/latest/latest.json";
-/// Where the user is sent to get the new version. The binaries are
-/// distributed from mayorana.ch, not from GitHub.
+/// Fallback when `latest.json` has no entry for this OS (e.g. an Intel Mac —
+/// only Apple Silicon is built). Sends the user to pick a build by hand
+/// instead of at a link that would 404.
 const RELEASES_URL: &str = "https://mayorana.ch/en/apps";
 
 #[derive(Debug, Deserialize)]
 struct LatestJson {
     version: String,
     tag: String,
+    platforms: Platforms,
+}
+
+#[derive(Debug, Deserialize)]
+struct Platforms {
+    macos: HashMap<String, Artifact>,
+    windows: HashMap<String, Artifact>,
+    linux: HashMap<String, Artifact>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Artifact {
+    url: String,
+    #[allow(dead_code)]
+    sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -24,6 +41,8 @@ pub struct UpdateInfo {
     pub latest_version: String,
     #[allow(dead_code)]
     pub latest_tag: String,
+    /// Direct link to this OS's build, so the banner's button downloads the
+    /// binary itself rather than opening a landing page to pick one from.
     pub release_url: String,
 }
 
@@ -50,11 +69,28 @@ pub async fn check() -> Option<UpdateInfo> {
         Some(UpdateInfo {
             latest_version: latest.version,
             latest_tag: latest.tag,
-            release_url: RELEASES_URL.to_string(),
+            release_url: platform_url(&latest.platforms),
         })
     } else {
         None
     }
+}
+
+/// Picks the one artifact URL published for this OS. Empty (build missing
+/// for this OS) or unparseable falls back to the landing page.
+fn platform_url(platforms: &Platforms) -> String {
+    let by_os = match std::env::consts::OS {
+        "macos" => &platforms.macos,
+        "windows" => &platforms.windows,
+        "linux" => &platforms.linux,
+        _ => return RELEASES_URL.to_string(),
+    };
+    by_os
+        .values()
+        .next()
+        .map(|a| a.url.clone())
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| RELEASES_URL.to_string())
 }
 
 fn is_newer(a: &str, b: &str) -> bool {
