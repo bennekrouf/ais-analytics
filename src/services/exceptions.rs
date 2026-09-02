@@ -36,7 +36,11 @@ const MIN_RETRY_SECS: f64 = 5.0;
 
 /// The table Application Insights writes exceptions to on a workspace-based
 /// component. A workspace with no App Insights simply will not have it.
-const TABLE: &str = "AppExceptions";
+pub const TABLE: &str = "AppExceptions";
+
+/// The column the correlation ids on a group come from. The trace pivot needs
+/// it too: the ids only mean anything against the key that carries them.
+pub const CORRELATION_FIELD: &str = "OperationId";
 
 /// Why a group is worth looking at. Kept apart from the raw message because
 /// the message is what the framework said, and this is what it means.
@@ -139,7 +143,7 @@ fn query(min_count: u64) -> String {
          \x20           Times = make_list(TimeGenerated, {MAX_TIMES}),\n\
          \x20           Roles = make_set(AppRoleName, 8),\n\
          \x20           Operations = make_set(OperationName, 8),\n\
-         \x20           Correlations = make_set(OperationId, 5)\n\
+         \x20           Correlations = make_set({CORRELATION_FIELD}, 5)\n\
          \x20   by ExceptionType, OuterMessage\n\
          | where Count > {min_count}\n\
          | order by Count desc\n\

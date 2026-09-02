@@ -564,7 +564,15 @@ pub fn Home(props: HomeProps) -> Element {
                                         let id = workspace_id.clone();
                                         move |cid: String| {
                                             tab.set(Tab::Trace);
-                                            follow.run(&id, cid, *range.peek());
+                                            follow.run_bound(
+                                                &id,
+                                                cid,
+                                                *range.peek(),
+                                                Some((
+                                                    exceptions::TABLE,
+                                                    exceptions::CORRELATION_FIELD,
+                                                )),
+                                            );
                                         }
                                     },
                                 }
@@ -681,13 +689,31 @@ struct Follow {
 }
 
 impl Follow {
-    fn run(mut self, workspace_id: &str, value: String, range: TimeRange) {
+    fn run(self, workspace_id: &str, value: String, range: TimeRange) {
+        self.run_bound(workspace_id, value, range, None);
+    }
+
+    /// `prefer` names the table and column the value was read from. When a key
+    /// candidate is bound to that exact column, it wins over the configured
+    /// trace key: an id lifted from one column means nothing against a key
+    /// that does not carry it, and the trace would come back empty.
+    fn run_bound(
+        mut self,
+        workspace_id: &str,
+        value: String,
+        range: TimeRange,
+        prefer: Option<(&str, &str)>,
+    ) {
         let (key, tables, facts) = {
             let insights = self.insights.peek();
-            let Some(key) = insights
-                .keys
-                .iter()
-                .find(|c| c.id == *self.key_id.peek())
+            let bound = prefer.and_then(|(table, field)| {
+                insights.keys.iter().find(|c| {
+                    c.binding_for(table)
+                        .is_some_and(|b| b.field.eq_ignore_ascii_case(field))
+                })
+            });
+            let Some(key) = bound
+                .or_else(|| insights.keys.iter().find(|c| c.id == *self.key_id.peek()))
                 .cloned()
             else {
                 return;
