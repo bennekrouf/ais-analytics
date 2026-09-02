@@ -199,7 +199,7 @@ fn LaneRow(props: LaneRowProps) -> Element {
     rsx! {
         div { class: "{class}",
             div { class: "lane-head",
-                span { class: "lane-name", "{lane.name}" }
+                span { class: "lane-name", title: "{lane.name}", "{lane.name}" }
                 if let Some(field) = &lane.detail {
                     span { class: "lane-field", "{field}" }
                 }
