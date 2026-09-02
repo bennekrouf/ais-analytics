@@ -98,6 +98,12 @@ fn platform_url(platforms: &Platforms) -> String {
         .next()
         .map(|a| a.url.clone())
         .filter(|u| !u.is_empty())
+        // Marks the hit as coming from an existing install. The banner opens
+        // this in the user's browser, so the updater's own User-Agent is not
+        // what fetches the file — without the marker the request is
+        // indistinguishable from a first-time download off the website.
+        // nginx serves the file regardless of the query string.
+        .map(|u| format!("{u}?src=updater"))
         .unwrap_or_else(|| RELEASES_URL.to_string())
 }
 
