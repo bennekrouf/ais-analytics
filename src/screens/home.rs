@@ -336,7 +336,7 @@ pub fn Home(props: HomeProps) -> Element {
                 onclick: move |_| props.on_back.call(()),
                 "‹ Back"
             }
-            h1 { "ais-analytics" }
+            h1 { "AIS Analytics" }
             span { class: "account-tag", "{workspace.name}  ({workspace.resource_group})" }
 
             div { class: "topbar-tabs",

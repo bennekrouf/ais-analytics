@@ -5,13 +5,98 @@
 //! (see `loganalytics.rs`), which reads the same `az` session.
 
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
 use std::process::Command;
+use std::sync::OnceLock;
 
 fn az_command(args: &[&str]) -> Command {
-    let mut cmd = Command::new("az");
+    let mut cmd = az_command_with_console(args);
+    hide_console(&mut cmd);
+    cmd
+}
+
+/// Same as [`az_command`], but the child keeps a console on Windows.
+///
+/// Only `az login` wants this: it can fall back to printing a device code and
+/// waiting, and a hidden console would leave the user staring at a UI that
+/// never changes, with the prompt they need drawn nowhere.
+fn az_command_with_console(args: &[&str]) -> Command {
+    let mut cmd = Command::new(az_program());
     cmd.args(args);
     cmd
 }
+
+/// Where `az` actually is, resolved once per run.
+///
+/// On Windows the Azure CLI ships as `az.cmd`, a batch wrapper — there is no
+/// `az.exe` anywhere in it. When `Command::new` searches `PATH` it appends
+/// only `.exe`; unlike cmd.exe it does not consult `PATHEXT`. So a bare
+/// `Command::new("az")` returns `NotFound` on a machine where typing `az` in
+/// any terminal works perfectly, which the UI then reported as "Azure CLI
+/// ('az') not found on PATH."
+fn az_program() -> &'static OsString {
+    static PROGRAM: OnceLock<OsString> = OnceLock::new();
+    PROGRAM.get_or_init(resolve_az)
+}
+
+#[cfg(not(windows))]
+fn resolve_az() -> OsString {
+    OsString::from("az")
+}
+
+#[cfg(windows)]
+fn resolve_az() -> OsString {
+    // `PATH` first: someone who put a particular `az` ahead of the rest means
+    // it. Extensions in cmd.exe's own `PATHEXT` order, so this picks the same
+    // file the user's terminal would.
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            for name in ["az.cmd", "az.bat", "az.exe"] {
+                let full = dir.join(name);
+                if full.is_file() {
+                    return full.into_os_string();
+                }
+            }
+        }
+    }
+
+    // Then the installers' own directories, because `PATH` can legitimately
+    // not have it: Explorer hands a GUI app the environment it held at
+    // sign-in, so a CLI installed since then is invisible here while every
+    // freshly opened cmd.exe finds it.
+    const CANDIDATES: &[(&str, &str)] = &[
+        ("ProgramFiles", r"Microsoft SDKs\Azure\CLI2\wbin\az.cmd"),
+        (
+            "ProgramFiles(x86)",
+            r"Microsoft SDKs\Azure\CLI2\wbin\az.cmd",
+        ),
+        ("LOCALAPPDATA", r"Programs\Azure CLI\wbin\az.cmd"),
+    ];
+    for (var, suffix) in CANDIDATES {
+        if let Some(base) = std::env::var_os(var) {
+            let full = std::path::Path::new(&base).join(suffix);
+            if full.is_file() {
+                return full.into_os_string();
+            }
+        }
+    }
+
+    // Nothing found. Report the failure against the plain name, so the error
+    // the user sees names what they would type.
+    OsString::from("az")
+}
+
+/// Stops a console window flashing over the UI on every `az` call — `az.cmd`
+/// is a batch file, and this is a windowed process.
+#[cfg(windows)]
+fn hide_console(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_console(_cmd: &mut Command) {}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AzLoginState {
@@ -85,13 +170,16 @@ pub fn check_login() -> AzLoginState {
 /// Opens `az login` (non-blocking) so the desktop app doesn't have to embed
 /// its own OAuth flow.
 pub fn open_login() -> Result<(), String> {
-    az_command(&["login"]).spawn().map(|_| ()).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            "Azure CLI ('az') not found on PATH.".to_string()
-        } else {
-            format!("Failed to start 'az login': {e}")
-        }
-    })
+    az_command_with_console(&["login"])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "Azure CLI ('az') not found on PATH.".to_string()
+            } else {
+                format!("Failed to start 'az login': {e}")
+            }
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

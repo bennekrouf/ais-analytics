@@ -119,7 +119,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     rsx! {
         div { class: "welcome",
             div { class: "welcome-card",
-                h1 { "ais-analytics" }
+                h1 { "AIS Analytics" }
                 p { class: "subtitle", "Azure Log Analytics — correlation-key flow explorer" }
 
                 div { class: "welcome-box",

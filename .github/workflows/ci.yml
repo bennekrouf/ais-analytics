@@ -37,8 +37,18 @@ jobs:
       - run: cargo fmt --all --check
 
   # ── Tests: blocking ────────────────────────────────────────────────────────
+  # Windows is in the matrix because the bugs that actually reach users are
+  # Windows-only: `az` resolving to `az.cmd`, and PATH being `;`-separated with
+  # a colon inside every entry. Neither is expressible on Linux, so a
+  # Linux-only suite reported green through both.
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      # One platform failing must still report the other — the point of adding
+      # Windows is to see it, not to mask Linux.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -52,7 +62,9 @@ jobs:
 
       # The same GTK/WebKit stack build-linux installs in release.yml: Dioxus
       # desktop links it even when all you are doing is running unit tests.
+      # Windows needs none of it — WebView2 ships with the OS.
       - name: Install build dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y \
