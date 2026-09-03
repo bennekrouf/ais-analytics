@@ -13,6 +13,9 @@ dark-light = "2.0.0"
 dioxus = { version = "0.7.10", features = ["desktop"] }
 dirs = "6.0.0"
 futures = "0.3.34"
+# Decodes assets/icon.png into the runtime window icon. Already in the tree
+# transitively; png is the only format needed.
+image = { version = "0.25", default-features = false, features = ["png"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

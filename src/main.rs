@@ -34,7 +34,7 @@ fn main() {
     let cfg = dioxus::desktop::Config::new()
         .with_data_directory(webview_data_dir)
         .with_window(window_builder(concat!(
-            "ais-analytics ",
+            "AIS Analytics ",
             env!("CARGO_PKG_VERSION")
         )));
     dioxus::LaunchBuilder::desktop().with_cfg(cfg).launch(App);
@@ -45,6 +45,29 @@ fn window_builder(title: &str) -> dioxus::desktop::WindowBuilder {
         .with_title(title)
         .with_inner_size(LogicalSize::new(1100.0, 760.0))
         .with_always_on_top(false)
+        .with_window_icon(window_icon())
+}
+
+/// The window icon, decoded from the embedded logo.
+///
+/// build.rs embeds `assets/icon.ico` into the .exe resource, which covers the
+/// Start menu and shortcuts — but the *window* (title bar, alt-tab, taskbar
+/// button) shows only what the app sets at runtime, and Windows falls back to
+/// a blank default when it sets nothing.
+///
+/// Downscaled to 64px on the way in: tao hands Windows this single bitmap for
+/// every size it needs, and letting it stretch a 1024px source down to a 16px
+/// title bar is what makes the icon look muddy.
+fn window_icon() -> Option<dioxus::desktop::tao::window::Icon> {
+    const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
+    const SIZE: u32 = 64;
+
+    let img = image::load_from_memory(ICON_PNG).ok()?.resize_exact(
+        SIZE,
+        SIZE,
+        image::imageops::FilterType::Lanczos3,
+    );
+    dioxus::desktop::tao::window::Icon::from_rgba(img.into_rgba8().into_raw(), SIZE, SIZE).ok()
 }
 
 /// Opens another window on `workspace`, in this same process — sharing the
@@ -61,7 +84,7 @@ pub fn open_in_new_window(workspace: Workspace) {
     dioxus::desktop::window().new_window(
         dom,
         dioxus::desktop::Config::new().with_window(window_builder(&format!(
-            "ais-analytics {} — {}",
+            "AIS Analytics {} — {}",
             env!("CARGO_PKG_VERSION"),
             workspace.name
         ))),
@@ -149,7 +172,7 @@ fn AppRoot(initial: Option<Workspace>) -> Element {
         if let (Some(info), false) = (update_info.read().clone(), *update_dismissed.read()) {
             div { class: "update-banner",
                 span { class: "update-banner-text",
-                    "ais-analytics "
+                    "AIS Analytics "
                     strong { "{info.latest_version}" }
                     " is available (you have {env!(\"CARGO_PKG_VERSION\")})."
                 }
