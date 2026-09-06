@@ -19,5 +19,8 @@ command -v rustfmt >/dev/null 2>&1 || {
     exit 0
 }
 
-printf '%s\n' "$files" | xargs rustfmt --edition 2021
+# The edition must match Cargo.toml, or this formats to different rules than
+# CI's `cargo fmt --all --check` — which reads the edition from the manifest —
+# and the hook starts producing exactly the diff the gate rejects.
+printf '%s\n' "$files" | xargs rustfmt --edition 2024
 printf '%s\n' "$files" | xargs git add --

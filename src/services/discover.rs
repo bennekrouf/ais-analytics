@@ -279,12 +279,23 @@ fn link_by_name(nodes: &[Node], dsu: &mut Dsu) {
         by_name.entry(node.name_key.as_str()).or_default().push(i);
     }
     for members in by_name.values() {
-        for pair in members.windows(2) {
-            // Only ever link across tables. Two columns of one row sharing a
-            // name cannot happen, but two paths inside a dynamic column can.
-            if nodes[pair[0]].schema != nodes[pair[1]].schema {
-                dsu.union(pair[0], pair[1]);
-            }
+        // Only ever link across tables. Two columns of one row sharing a name
+        // cannot happen, but two paths inside a dynamic column can — and once
+        // the name genuinely spans tables, every member of the group belongs
+        // to it, same-table duplicates included.
+        //
+        // Chaining consecutive pairs and skipping same-schema ones dropped
+        // members on the floor: nodes are pushed in schema order, so for
+        // `[A₀, A₁, B]` the skipped `(A₀, A₁)` left `A₀` in a group of its
+        // own while `A₁` and `B` linked up.
+        let spans_tables = members
+            .iter()
+            .any(|&i| nodes[i].schema != nodes[members[0]].schema);
+        if !spans_tables {
+            continue;
+        }
+        for &i in &members[1..] {
+            dsu.union(members[0], i);
         }
     }
 }
@@ -609,7 +620,14 @@ fn label_candidates(schemas: &[TableSchema]) -> Vec<RoleCandidate> {
             if field.seen_in >= 8 && field.distinct_ratio() > 0.8 {
                 continue;
             }
-            if field.values.iter().any(|v| v.len() > 60) {
+            // Characters, not bytes: a twenty-character label is a label in
+            // any script, and counting bytes rejected non-Latin ones as free
+            // text at a third of the length.
+            if field
+                .values
+                .iter()
+                .any(|v| v.chars().count() > MAX_LABEL_CHARS)
+            {
                 continue; // free text, not a label
             }
             if field.values.iter().filter(|v| id_shaped(v)).count() * 2 > field.values.len() {
@@ -701,6 +719,10 @@ fn time_shaped(v: &str) -> bool {
     }
 }
 
+/// Longest a value can be and still read as a name for a step rather than as
+/// a sentence about one.
+const MAX_LABEL_CHARS: usize = 60;
+
 /// A weak, convention-based hint — never decisive on its own.
 fn name_suggests_identifier(lower: &str) -> bool {
     const HINTS: [&str; 7] = [
@@ -778,6 +800,7 @@ mod tests {
             table: name.into(),
             sampled_rows: sampled,
             rows_in_range: sampled,
+            unread: false,
             fields,
         }
     }
@@ -1125,6 +1148,55 @@ mod tests {
         assert!(
             insights.keys.iter().all(|c| c.bindings.len() == 1),
             "a value appearing in every table links nothing"
+        );
+    }
+
+    /// A label is a label in any script. Measuring it in bytes threw out
+    /// non-Latin vocabularies at a third of the intended length.
+    #[test]
+    fn a_labels_length_is_counted_in_characters() {
+        let long_in_bytes = "処理".repeat(12); // 24 chars, 72 bytes
+        assert!(long_in_bytes.len() > MAX_LABEL_CHARS);
+        assert!(long_in_bytes.chars().count() <= MAX_LABEL_CHARS);
+
+        let schemas = vec![table(
+            "MyApp_CL",
+            vec![field("Stage", &[long_in_bytes.as_str(), "完了", "開始"])],
+        )];
+        let labels = label_candidates(&schemas);
+        assert!(
+            labels.iter().any(|c| c.id == "stage"),
+            "got {:?}",
+            labels.iter().map(|c| &c.id).collect::<Vec<_>>()
+        );
+    }
+
+    /// Two paths in one table whose names differ only in case share a
+    /// `name_key`. Chaining consecutive pairs and skipping the same-table
+    /// one left the first of them stranded in a group of its own.
+    #[test]
+    fn a_duplicate_spelling_in_one_table_still_joins_the_group() {
+        let ids = uuids();
+        let schemas = vec![
+            table(
+                "MyApp_CL",
+                vec![
+                    field("Properties.JobRef", &ids),
+                    field("Properties.jobref", &ids),
+                ],
+            ),
+            table("AppRequests", vec![field("Properties.jobref", &ids)]),
+        ];
+
+        let keys = key_candidates(&schemas);
+        let group = keys
+            .iter()
+            .find(|c| c.bindings.iter().any(|b| b.table == "AppRequests"))
+            .expect("the cross-table key exists");
+        assert!(
+            group.bindings.iter().any(|b| b.table == "MyApp_CL"),
+            "the duplicate-cased column must not be stranded: {:?}",
+            group.bindings
         );
     }
 

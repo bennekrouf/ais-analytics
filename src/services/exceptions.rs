@@ -29,6 +29,9 @@ const MAX_TIMES: usize = 200;
 /// Default floor for "recurring". Two could be coincidence; above this a
 /// pattern is a pattern.
 pub const DEFAULT_MIN_COUNT: u64 = 3;
+/// Names listed on a group before the list stops being readable. The counts
+/// beside them are not capped by this.
+const NAMES_SHOWN: usize = 8;
 /// Shortest gap that can plausibly be a retry timer. Anything faster is a hot
 /// loop or a burst inside one bad moment — evenly spaced, but not the thing
 /// this view is looking for.
@@ -83,10 +86,16 @@ pub struct Group {
     pub first: Option<i64>,
     pub last: Option<i64>,
     pub cadence: Option<Cadence>,
-    /// The apps or functions it was seen under.
+    /// The apps or functions it was seen under. Capped for display.
     pub roles: Vec<String>,
+    /// How many distinct apps there really are. Counted server-side rather
+    /// than taken from `roles.len()`, which stops at `NAMES_SHOWN` — and the
+    /// blast radius of a shared cause is exactly the number this hint exists
+    /// to report, so saturating it understates the worst cases.
+    pub role_count: usize,
     /// The operations (function / workflow names) it was seen under.
     pub operations: Vec<String>,
+    pub operation_count: usize,
     /// Correlation ids, so a group can be opened in the trace view.
     pub correlation_ids: Vec<String>,
     pub hints: Vec<Hint>,
@@ -141,8 +150,10 @@ fn query(min_count: u64) -> String {
          | summarize Count = sum(ItemCount), Events = count(),\n\
          \x20           First = min(TimeGenerated), Last = max(TimeGenerated),\n\
          \x20           Times = make_list(TimeGenerated, {MAX_TIMES}),\n\
-         \x20           Roles = make_set(AppRoleName, 8),\n\
-         \x20           Operations = make_set(OperationName, 8),\n\
+         \x20           Roles = make_set(AppRoleName, {NAMES_SHOWN}),\n\
+         \x20           RoleCount = dcount(AppRoleName),\n\
+         \x20           Operations = make_set(OperationName, {NAMES_SHOWN}),\n\
+         \x20           OperationCount = dcount(OperationName),\n\
          \x20           Correlations = make_set({CORRELATION_FIELD}, 5)\n\
          \x20   by ExceptionType, OuterMessage\n\
          | where Count > {min_count}\n\
@@ -183,6 +194,15 @@ fn build(row: &Value) -> Group {
         })
         .unwrap_or_default();
 
+    // `dcount` is an estimate above a few thousand, but it is never below
+    // what came back in the capped list — so take whichever is larger.
+    let count_of = |key: &str, shown: &[String]| {
+        row.get(key)
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            .max(shown.len() as u64) as usize
+    };
+
     let mut group = Group {
         exception_type: text("ExceptionType"),
         outer_message: text("OuterMessage"),
@@ -192,7 +212,9 @@ fn build(row: &Value) -> Group {
         last: time("Last"),
         cadence: cadence(&times),
         roles: list("Roles"),
+        role_count: count_of("RoleCount", &list("Roles")),
         operations: list("Operations"),
+        operation_count: count_of("OperationCount", &list("Operations")),
         correlation_ids: list("Correlations"),
         hints: Vec::new(),
     };
@@ -246,7 +268,7 @@ fn median(values: &[f64]) -> f64 {
     let mut v = values.to_vec();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = v.len() / 2;
-    if v.len() % 2 == 0 {
+    if v.len().is_multiple_of(2) {
         (v[mid - 1] + v[mid]) / 2.0
     } else {
         v[mid]
@@ -289,12 +311,12 @@ pub fn classify(group: &Group) -> Vec<Hint> {
 
     // The strongest signal in the whole view: the same failure under several
     // names is one broken thing, not several.
-    let names = group.roles.len().max(group.operations.len());
+    let names = group.role_count.max(group.operation_count);
     if names > 1 {
-        let where_ = if group.roles.len() > 1 {
-            format!("{} apps", group.roles.len())
+        let where_ = if group.role_count > 1 {
+            format!("{} apps", group.role_count)
         } else {
-            format!("{} operations", group.operations.len())
+            format!("{} operations", group.operation_count)
         };
         hints.push(Hint {
             kind: HintKind::Shared,
@@ -305,18 +327,18 @@ pub fn classify(group: &Group) -> Vec<Hint> {
         });
     }
 
-    if let Some(c) = group.cadence {
-        if c.regular {
-            hints.push(Hint {
-                kind: HintKind::Cadence,
-                text: format!(
-                    "Fires every ~{} on a fixed interval — something is retrying \
+    if let Some(c) = group.cadence
+        && c.regular
+    {
+        hints.push(Hint {
+            kind: HintKind::Cadence,
+            text: format!(
+                "Fires every ~{} on a fixed interval — something is retrying \
                      on a timer. That is a stuck listener or a dropped \
                      connection, not a transient.",
-                    human_gap(c.median_secs)
-                ),
-            });
-        }
+                human_gap(c.median_secs)
+            ),
+        });
     }
 
     hints
@@ -361,7 +383,9 @@ mod tests {
             last: None,
             cadence: None,
             roles: vec!["fn-orders".into()],
+            role_count: 1,
             operations: vec!["ProcessOrder".into()],
+            operation_count: 1,
             correlation_ids: vec![],
             hints: vec![],
         }
@@ -378,6 +402,10 @@ mod tests {
         assert!(kql.contains("| where Count > 3"));
         // Timestamps have to come back for the cadence test to mean anything.
         assert!(kql.contains("Times = make_list(TimeGenerated, 200)"));
+        // The names shown are capped; the count beside them must not be.
+        assert!(kql.contains("Roles = make_set(AppRoleName, 8)"));
+        assert!(kql.contains("RoleCount = dcount(AppRoleName)"));
+        assert!(kql.contains("OperationCount = dcount(OperationName)"));
         // The window is the request timespan, not a hardcoded ago().
         assert!(!kql.contains("ago("), "the range belongs to the caller");
     }
@@ -419,6 +447,7 @@ mod tests {
     fn one_failure_under_many_names_is_reported_as_one_cause() {
         let mut g = group("System.ArgumentException", "boom");
         g.roles = vec!["fn-orders".into(), "fn-billing".into(), "fn-audit".into()];
+        g.role_count = g.roles.len();
         let hints = classify(&g);
         let shared = hints.iter().find(|h| h.kind == HintKind::Shared).unwrap();
         assert!(shared.text.contains("3 apps"), "{}", shared.text);
@@ -427,6 +456,33 @@ mod tests {
             "{}",
             shared.text
         );
+    }
+
+    /// The list of names stops at `NAMES_SHOWN`; the blast radius must not.
+    /// Reading the count off the capped list turned "across 30 apps" into
+    /// "across 8 apps" on exactly the failures that matter most.
+    #[test]
+    fn the_blast_radius_is_not_capped_by_the_names_shown() {
+        let mut g = group("System.ArgumentException", "boom");
+        g.roles = (0..NAMES_SHOWN).map(|i| format!("fn-{i}")).collect();
+        g.role_count = 30;
+
+        let hints = classify(&g);
+        let shared = hints.iter().find(|h| h.kind == HintKind::Shared).unwrap();
+        assert!(shared.text.contains("30 apps"), "{}", shared.text);
+    }
+
+    /// `dcount` is an estimate; it must never report fewer apps than were
+    /// actually listed.
+    #[test]
+    fn a_low_estimate_never_undercuts_the_names_in_hand() {
+        let row = json!({
+            "ExceptionType": "System.ArgumentException",
+            "OuterMessage": "boom",
+            "Roles": ["fn-a", "fn-b", "fn-c"],
+            "RoleCount": 1,
+        });
+        assert_eq!(build(&row).role_count, 3);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 pub mod az;
 pub mod cache;
+pub mod clipboard;
 pub mod discover;
 pub mod env;
 pub mod exceptions;

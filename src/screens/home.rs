@@ -50,6 +50,16 @@ pub fn Home(props: HomeProps) -> Element {
     let mut refreshing = use_signal(|| false);
     let mut refresh_error = use_signal(|| Option::<String>::None);
     let mut scanned_at = use_signal(|| Option::<i64>::None);
+    // Tables the last scan could not read. Kept apart from `refresh_error`:
+    // that one means "nothing came back", this one means "what came back is
+    // missing pieces", and only the second can sit under a usable screen.
+    let mut unread = use_signal(Vec::<String>::new);
+    // Why they could not be read — throttling and a missing role need
+    // completely different things from the user.
+    let mut unread_why = use_signal(|| Option::<String>::None);
+    // Bumped per scan so a slow scan landing after a newer one has started
+    // can tell that it lost and drop its result instead of overwriting it.
+    let mut scan_seq = use_signal(|| 0u64);
 
     // What the user is tracing on: the key that links steps, the field that
     // orders them, the field that names them.
@@ -96,12 +106,28 @@ pub fn Home(props: HomeProps) -> Element {
             }
             refreshing.set(true);
             refresh_error.set(None);
+            // Changing the range starts a scan without cancelling the one
+            // already running, and the two need not finish in order. Whoever
+            // is no longer the newest simply drops what it found.
+            let seq = *scan_seq.peek() + 1;
+            scan_seq.set(seq);
             spawn(async move {
-                match scan_workspace(&id, range).await {
+                let outcome = scan_workspace(&id, range).await;
+                if *scan_seq.peek() != seq {
+                    return;
+                }
+                match outcome {
                     Ok(found) => {
-                        cache::save(&id, range, &found);
+                        // A partial scan must not be cached: it would be
+                        // reloaded next launch as a complete picture of a
+                        // workspace where those tables simply hold nothing.
+                        if !found.partial() {
+                            cache::save(&id, range, &found.schemas);
+                        }
                         scanned_at.set(Some(chrono::Utc::now().timestamp()));
-                        schemas.set(found);
+                        unread_why.set(found.error);
+                        unread.set(found.unread);
+                        schemas.set(found.schemas);
                         state.set(LoadState::Done);
                     }
                     Err(e) => {
@@ -173,7 +199,9 @@ pub fn Home(props: HomeProps) -> Element {
         let id = workspace_id.clone();
         move || {
             let text = typed.read().trim().to_string();
-            if text.len() < trace::MIN_FRAGMENT {
+            // Characters, matching `trace::suggest`'s own floor — counting
+            // bytes here would fire a lookup that `suggest` then refuses.
+            if text.chars().count() < trace::MIN_FRAGMENT {
                 suggestions.set(Vec::new());
                 suggesting.set(false);
                 return;
@@ -385,12 +413,11 @@ pub fn Home(props: HomeProps) -> Element {
                         let picked = TimeRange::all()
                             .into_iter()
                             .find(|r| r.iso() == evt.value());
-                        if let Some(picked) = picked {
-                            if picked != *range.peek() {
+                        if let Some(picked) = picked
+                            && picked != *range.peek() {
                                 range.set(picked);
                                 run_scan(true);
                             }
-                        }
                     }
                 },
                 for r in TimeRange::all() {
@@ -413,6 +440,17 @@ pub fn Home(props: HomeProps) -> Element {
                 }
             } else if let Some(at) = *scanned_at.read() {
                 span { class: "scan-state", "sampled {cache::age(at)}" }
+            }
+            // An unread table is drawn exactly like an empty one, so the
+            // count has to be said out loud or a half-read workspace reads
+            // as an idle one.
+            if !unread.read().is_empty() {
+                span {
+                    class: "scan-state stale",
+                    title: "{unread_why.read().clone().unwrap_or_default()}\n\n{unread.read().join(\", \")}",
+                    span { class: "dot error" }
+                    "{unread.read().len()} tables unread"
+                }
             }
 
             button {
@@ -771,7 +809,7 @@ impl Follow {
                                 name: name.clone(),
                                 detail: None,
                                 blocks: Vec::new(),
-                                state: trace::LaneState::Failed(0),
+                                state: trace::LaneState::Failed,
                                 error: Some(e.clone()),
                             })
                             .collect(),
@@ -1098,18 +1136,17 @@ fn DocPanel(props: DocPanelProps) -> Element {
                         let pretty = pretty.clone();
                         move |_| {
                             // Best-effort: a clipboard we can't reach is not
-                            // worth interrupting the user over.
-                            if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                                if clipboard.set_text(pretty.clone()).is_ok() {
-                                    copied.set(true);
-                                    spawn(async move {
-                                        tokio::time::sleep(
-                                            std::time::Duration::from_millis(1400),
-                                        )
+                            // worth interrupting the user over — but the
+                            // badge must not claim a copy that did not
+                            // happen, which is what a per-click clipboard
+                            // handle did on Linux. See services::clipboard.
+                            if crate::services::clipboard::copy(pretty.clone()).is_ok() {
+                                copied.set(true);
+                                spawn(async move {
+                                    tokio::time::sleep(std::time::Duration::from_millis(1400))
                                         .await;
-                                        copied.set(false);
-                                    });
-                                }
+                                    copied.set(false);
+                                });
                             }
                         }
                     },
@@ -1537,7 +1574,11 @@ fn TableRow(props: TableRowProps) -> Element {
                 }
                 div { class: "spacer" }
                 span { class: "container-meta",
-                    if s.rows_in_range == 0 {
+                    // "not read" before "no rows": they render identically
+                    // otherwise, and only one of them is a fact about the data.
+                    if s.unread {
+                        "{s.fields.len()} columns · not read"
+                    } else if s.rows_in_range == 0 {
                         "{s.fields.len()} columns · no rows in range"
                     } else {
                         "{s.fields.len()} columns · {s.rows_in_range} rows · {s.sampled_rows} sampled"
@@ -1581,9 +1622,16 @@ fn TableRow(props: TableRowProps) -> Element {
     }
 }
 
+async fn scan_workspace(workspace_id: &str, range: TimeRange) -> Result<schema::Scan, String> {
+    // One client for the whole scan — building it resolves credentials,
+    // which can shell out to `az`.
+    let client = Client::connect()?;
+    schema::scan(&client, workspace_id, range).await
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{shorten, shows, PickOption};
+    use super::{PickOption, shorten, shows};
 
     fn option(id: &str, haystack: &str) -> PickOption {
         PickOption {
@@ -1648,14 +1696,4 @@ mod tests {
         let value = "→".repeat(40);
         assert_eq!(shorten(&value).chars().count(), 17);
     }
-}
-
-async fn scan_workspace(
-    workspace_id: &str,
-    range: TimeRange,
-) -> Result<Vec<schema::TableSchema>, String> {
-    // One client for the whole scan — building it resolves credentials,
-    // which can shell out to `az`.
-    let client = Client::connect()?;
-    schema::scan(&client, workspace_id, range).await
 }

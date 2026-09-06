@@ -17,7 +17,7 @@
 
 use crate::services::discover::KeyCandidate;
 use crate::services::loganalytics::{
-    column_ref, kql_string, let_literal, table_ref, Client, TimeRange,
+    Client, TimeRange, column_ref, kql_string, let_literal, table_ref,
 };
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -28,10 +28,23 @@ use std::collections::{BTreeMap, BTreeSet};
 const MAX_BLOCKS: usize = 200;
 /// Facts shown on a block card before it stops being "essential data".
 const MAX_FACTS: usize = 3;
+/// Width of a fact value on a card, in characters. Counted in characters
+/// rather than bytes so the "is it short enough" test and the truncation
+/// agree on non-ASCII values.
+const FACT_CHARS: usize = 28;
 /// Tables unioned per query. Bounds the blast radius of one unqueryable
 /// table: the Cosmos version could fail a single container without losing
 /// the rest, and chunking preserves that.
 const TABLES_PER_QUERY: usize = 25;
+
+/// The per-branch cap above is the only thing bounding a trace query, so it
+/// has to stay under the client's row ceiling — otherwise `Client::query`
+/// would truncate the tail of the union, which is lane-blind and puts us
+/// straight back to lanes that falsely read as `Awaiting`.
+const _: () = assert!(
+    TABLES_PER_QUERY * MAX_BLOCKS <= crate::services::loganalytics::MAX_ROWS,
+    "a full trace chunk must fit inside Client::query's row ceiling"
+);
 
 /// Injected by the union so each row knows which table it came from. Named
 /// to be unlikely to collide with a real column.
@@ -136,7 +149,8 @@ pub enum LaneState {
     /// The key doesn't exist in this table at all: it isn't on this path, so
     /// its emptiness means nothing.
     OffPath,
-    Failed(u8),
+    /// The query covering this lane failed; `Lane::error` says how.
+    Failed,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -219,7 +233,7 @@ pub async fn suggest(
     range: TimeRange,
 ) -> Vec<String> {
     let fragment = fragment.trim();
-    if fragment.len() < MIN_FRAGMENT {
+    if fragment.chars().count() < MIN_FRAGMENT {
         return Vec::new();
     }
 
@@ -254,7 +268,8 @@ fn suggest_query(bound: &[&crate::services::discover::Binding], fragment: &str) 
         .map(|b| {
             let column = column_ref(&b.field);
             format!(
-                "    ({} | where tostring({column}) contains v | project Value = tostring({column}))",
+                "    ({} | where tostring({column}) contains v \
+                 | project Value = tostring({column}) | distinct Value | take {MAX_SUGGESTIONS})",
                 table_ref(&b.table)
             )
         })
@@ -347,7 +362,7 @@ async fn fetch(
                 name: binding.table.clone(),
                 detail: Some(binding.field.clone()),
                 blocks: Vec::new(),
-                state: LaneState::Failed(0),
+                state: LaneState::Failed,
                 error: Some(error.clone()),
             });
             continue;
@@ -356,7 +371,6 @@ async fn fetch(
         let rows = rows_by_table.remove(&binding.table).unwrap_or_default();
         let mut blocks: Vec<Block> = rows
             .iter()
-            .take(MAX_BLOCKS)
             .enumerate()
             .map(|(i, row)| {
                 build_block(
@@ -368,7 +382,12 @@ async fn fetch(
                 )
             })
             .collect();
+        // Sort before capping. Cutting the service's (unordered) row order
+        // first and sorting the survivors keeps an arbitrary 200 rows, which
+        // is not the same as the first 200 — and it is `first_at()`, taken
+        // from this list, that orders the lanes and prints the `+gap` chip.
         blocks.sort_by_key(|b| b.at.unwrap_or(i64::MAX));
+        blocks.truncate(MAX_BLOCKS);
         let state = if blocks.is_empty() {
             LaneState::Awaiting
         } else {
@@ -427,6 +446,14 @@ async fn fetch(
 ///
 /// `isfuzzy=true` matters here for the same reason it does in the scan: a
 /// table that has since been retired should cost that lane, not the trace.
+///
+/// Each branch carries its own `take`. A single `take` after the union reads
+/// as a per-query row budget but is nothing of the kind: KQL `take` is
+/// explicitly unordered, so one chatty table could absorb the whole budget
+/// and leave every other lane in the chunk with zero rows — reported as
+/// `Awaiting`, which is this view telling you a step never happened when it
+/// did. Capping inside each branch spends the budget on rows within a lane
+/// instead of on lanes.
 fn trace_query(
     bound: &[&crate::services::discover::Binding],
     value: &str,
@@ -436,7 +463,7 @@ fn trace_query(
         .iter()
         .map(|b| {
             format!(
-                "    ({} | where {} | extend {LANE_COLUMN} = {})",
+                "    ({} | where {} | take {MAX_BLOCKS} | extend {LANE_COLUMN} = {})",
                 table_ref(&b.table),
                 predicate(&b.field, &b.kind, partial),
                 kql_string(&b.table),
@@ -446,9 +473,8 @@ fn trace_query(
         .join(",\n");
 
     format!(
-        "{}\nunion isfuzzy=true\n{branches}\n| take {}",
-        let_literal("v", value),
-        MAX_BLOCKS * bound.len().max(1),
+        "{}\nunion isfuzzy=true\n{branches}",
+        let_literal("v", value)
     )
 }
 
@@ -480,7 +506,7 @@ fn sort_lanes(lanes: &mut [Lane]) {
         let rank = |l: &Lane| match l.state {
             LaneState::Reached => 0,
             LaneState::Awaiting => 1,
-            LaneState::Failed(_) => 2,
+            LaneState::Failed => 2,
             LaneState::OffPath => 3,
         };
         rank(a)
@@ -522,7 +548,7 @@ fn regroup(table_lanes: Vec<Lane>, lane_field: &str, expected_lanes: &[String]) 
     let mut failed = Vec::new();
 
     for lane in table_lanes {
-        if lane.state == LaneState::Failed(0) {
+        if lane.state == LaneState::Failed {
             failed.push(lane);
             continue;
         }
@@ -593,28 +619,28 @@ fn build_block(doc: &Value, spec: &TraceSpec, table: &str, key_field: &str, id: 
         // Chosen columns are held lowercased for matching, but a card must
         // show the column the way the workspace spells it — `SeverityLevel`,
         // not `severitylevel`.
-        if let Some((name, value)) = lookup_entry(doc, path) {
-            if let Some(text) = scalar_text(value) {
-                facts.push((name.to_string(), truncate(&text, 28)));
-                taken.push(path.clone());
-            }
+        if let Some((name, value)) = lookup_entry(doc, path)
+            && let Some(text) = scalar_text(value)
+        {
+            facts.push((name.to_string(), truncate(&text, FACT_CHARS)));
+            taken.push(path.clone());
         }
     }
 
     // Then whatever short scalars the row has, so a card is never blank.
-    if facts.len() < MAX_FACTS {
-        if let Value::Object(map) = doc {
-            for (name, value) in map {
-                if facts.len() >= MAX_FACTS
-                    || name == LANE_COLUMN
-                    || SYSTEM_FIELDS.iter().any(|s| s.eq_ignore_ascii_case(name))
-                    || taken.contains(&name.to_lowercase())
-                {
-                    continue;
-                }
-                if let Some(text) = scalar_text(value).filter(|t| t.len() <= 28) {
-                    facts.push((name.clone(), text));
-                }
+    if facts.len() < MAX_FACTS
+        && let Value::Object(map) = doc
+    {
+        for (name, value) in map {
+            if facts.len() >= MAX_FACTS
+                || name == LANE_COLUMN
+                || SYSTEM_FIELDS.iter().any(|s| s.eq_ignore_ascii_case(name))
+                || taken.contains(&name.to_lowercase())
+            {
+                continue;
+            }
+            if let Some(text) = scalar_text(value).filter(|t| t.chars().count() <= FACT_CHARS) {
+                facts.push((name.clone(), text));
             }
         }
     }
@@ -653,7 +679,12 @@ fn lookup_entry<'a>(doc: &'a Value, lower_path: &str) -> Option<(&'a str, &'a Va
         let Value::Object(map) = current else {
             return None;
         };
-        let (key, value) = map.iter().find(|(k, _)| k.to_lowercase() == segment)?;
+        // ASCII fast path first: this runs for every fact of every block, and
+        // the fallback is only needed for the rare non-ASCII dynamic key,
+        // where it preserves the Unicode-aware comparison exactly.
+        let (key, value) = map
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(segment) || k.to_lowercase() == segment)?;
         name = key.as_str();
         current = value;
     }
@@ -774,6 +805,29 @@ mod tests {
         assert!(kql.contains(r#"__ais_lane = "AppRequests""#));
     }
 
+    /// The bug this guards: a single `take` after the union is unordered, so
+    /// one busy table could absorb the whole budget and leave every other
+    /// lane in the chunk reading as `Awaiting` — the view claiming a step
+    /// never happened when it did.
+    #[test]
+    fn the_row_cap_is_spent_per_lane_not_across_the_union() {
+        let a = binding("AppRequests", "OperationId", "string");
+        let b = binding("MyApp_CL", "job_ref_g", "string");
+        let kql = trace_query(&[&a, &b], "abc-123", false);
+
+        assert_eq!(
+            kql.matches(&format!("take {MAX_BLOCKS}")).count(),
+            2,
+            "every branch caps itself: {kql}"
+        );
+        // Nothing may cap the union as a whole.
+        let after_union = kql.rsplit(')').next().unwrap_or_default();
+        assert!(
+            !after_union.contains("take"),
+            "no post-union take: {after_union:?}"
+        );
+    }
+
     /// KQL is typed and the user typed characters, so anything that isn't a
     /// declared string has to be coerced before comparison.
     #[test]
@@ -819,6 +873,16 @@ mod tests {
         assert_eq!(kql.matches(';').count(), 1);
     }
 
+    /// A three-character CJK fragment is three characters, not nine bytes.
+    #[test]
+    fn the_fragment_floor_counts_characters() {
+        assert_eq!("実行中".chars().count(), 3);
+        assert!(
+            "実行中".len() >= MIN_FRAGMENT,
+            "the byte length passed the old check"
+        );
+    }
+
     #[test]
     fn suggestions_ask_for_distinct_values_not_rows() {
         let a = binding("AppRequests", "OperationId", "string");
@@ -826,6 +890,9 @@ mod tests {
         assert!(kql.contains("distinct Value"), "got: {kql}");
         assert!(kql.contains("contains v"));
         assert!(kql.contains("take 25"));
+        // Bounded inside each branch too, so one busy table cannot make the
+        // type-ahead scan the workspace.
+        assert!(kql.contains("| distinct Value | take 25)"), "got: {kql}");
     }
 
     #[test]
@@ -902,7 +969,7 @@ mod tests {
                     name: "Broken_CL".into(),
                     detail: None,
                     blocks: vec![],
-                    state: LaneState::Failed(0),
+                    state: LaneState::Failed,
                     error: Some("denied".into()),
                 },
             ],
@@ -921,10 +988,7 @@ mod tests {
         assert!(names.contains(&"Archive"));
         // A failure must not be folded into "nothing here".
         assert!(
-            relaned
-                .lanes
-                .iter()
-                .any(|l| l.state == LaneState::Failed(0)),
+            relaned.lanes.iter().any(|l| l.state == LaneState::Failed),
             "a failed lane must survive regrouping"
         );
         // Empty axis is the identity, so the choice is reversible.
