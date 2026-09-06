@@ -78,7 +78,12 @@ pub fn save(workspace_id: &str, range: TimeRange, schemas: &[TableSchema]) {
 
 /// "just now", "5m ago", "3h ago" — enough to judge whether to trust it.
 pub fn age(scanned_at: i64) -> String {
-    let secs = (chrono::Utc::now().timestamp() - scanned_at).max(0);
+    // Saturating: `scanned_at` comes off disk, and this module's whole
+    // contract is that a corrupt file costs a cold start and nothing else.
+    let secs = chrono::Utc::now()
+        .timestamp()
+        .saturating_sub(scanned_at)
+        .max(0);
     match secs {
         0..=59 => "just now".to_string(),
         60..=3599 => format!("{}m ago", secs / 60),
@@ -127,5 +132,10 @@ mod tests {
         assert_eq!(age(now - 172_800), "2d ago");
         // A clock that jumped backwards must not print a negative age.
         assert_eq!(age(now + 60), "just now");
+        // A corrupt cache file must not overflow the subtraction. Debug
+        // builds panic on overflow, and this module promises that an
+        // unreadable cache costs a cold start and nothing else.
+        assert!(age(i64::MIN).ends_with("d ago"), "absurd, but not a panic");
+        assert_eq!(age(i64::MAX), "just now", "a future stamp reads as fresh");
     }
 }

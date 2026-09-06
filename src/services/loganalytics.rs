@@ -27,11 +27,22 @@ use std::sync::Arc;
 const SCOPE: &str = "https://api.loganalytics.io/.default";
 const ENDPOINT: &str = "https://api.loganalytics.azure.com/v1";
 
-/// Ceiling on rows pulled back from any one query. The service allows far
-/// more (500k), but nothing in this app can usefully display it, and an
-/// accidental unbounded query on a busy workspace should cost seconds, not
-/// minutes.
+/// Ceiling on rows this app will hold from any one query.
+///
+/// A display cap, not a cost control: it is applied after the response has
+/// been downloaded and parsed, so it bounds what gets rendered and nothing
+/// about what gets fetched. Keeping a query cheap is the query's own job —
+/// every builder in this app carries its own `take` — and `MAX_BODY_BYTES`
+/// is the backstop for when one of them is wrong.
 pub const MAX_ROWS: usize = 5_000;
+
+/// Refusal point for a response body.
+///
+/// `Response::text()` buffers whatever the service decides to send, and the
+/// service will happily send 500k rows. Streaming to a ceiling turns "the app
+/// grows to several GB and the machine starts swapping" into an error
+/// message naming the fix.
+const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 // ── Time range ────────────────────────────────────────────────────────────
 
@@ -41,20 +52,15 @@ pub const MAX_ROWS: usize = 5_000;
 /// is no "just query everything". That makes the range a first-class part of
 /// every request rather than an optional filter, so it is modelled as such
 /// and threaded through the scan, the type-ahead, and the trace alike.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TimeRange {
     LastHour,
     Last2Hours,
     Last4Hours,
+    #[default]
     LastDay,
     LastWeek,
     Last30Days,
-}
-
-impl Default for TimeRange {
-    fn default() -> Self {
-        TimeRange::LastDay
-    }
 }
 
 impl TimeRange {
@@ -193,10 +199,7 @@ impl Client {
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
-        let body = response
-            .text()
-            .await
-            .map_err(|e| format!("could not read response: {e}"))?;
+        let body = bounded_body(response).await?;
 
         if !status.is_success() {
             return Err(describe_failure(status, &body, retry_after.as_deref()));
@@ -236,10 +239,7 @@ impl Client {
             .map_err(|e| format!("request failed: {e}"))?;
 
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|e| format!("could not read response: {e}"))?;
+        let body = bounded_body(response).await?;
         if !status.is_success() {
             return Err(describe_failure(status, &body, None));
         }
@@ -248,6 +248,26 @@ impl Client {
             serde_json::from_str(&body).map_err(|e| format!("malformed metadata: {e}"))?;
         Ok(tables_of(&parsed))
     }
+}
+
+/// Reads a response body, refusing one too large to hold.
+async fn bounded_body(mut response: reqwest::Response) -> Result<String, String> {
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        let chunk = response
+            .chunk()
+            .await
+            .map_err(|e| format!("could not read response: {e}"))?;
+        let Some(chunk) = chunk else { break };
+        if buf.len() + chunk.len() > MAX_BODY_BYTES {
+            return Err(format!(
+                "the workspace returned more than {} MB — narrow the time range",
+                MAX_BODY_BYTES / (1024 * 1024)
+            ));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    String::from_utf8(buf).map_err(|e| format!("response was not valid UTF-8: {e}"))
 }
 
 // ── Response shaping ──────────────────────────────────────────────────────
@@ -389,10 +409,10 @@ fn api_error_message(error: &Value) -> String {
     let mut current = error;
     let mut best = String::new();
     loop {
-        if let Some(message) = current.get("message").and_then(Value::as_str) {
-            if !message.is_empty() {
-                best = message.to_string();
-            }
+        if let Some(message) = current.get("message").and_then(Value::as_str)
+            && !message.is_empty()
+        {
+            best = message.to_string();
         }
         match current
             .get("innererror")

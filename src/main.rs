@@ -28,8 +28,9 @@ fn main() {
     let instances_dir = dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("ais-analytics");
-    prune_stale_instance_dirs(&instances_dir);
+    prune_dead_instance_dirs(&instances_dir);
     let webview_data_dir = instances_dir.join(format!("instance-{}", std::process::id()));
+    claim_instance_dir(&webview_data_dir);
 
     let cfg = dioxus::desktop::Config::new()
         .with_data_directory(webview_data_dir)
@@ -91,14 +92,41 @@ pub fn open_in_new_window(workspace: Workspace) {
     );
 }
 
+/// Held open for the life of the process. While this file is locked, the
+/// directory holding it is in use; `prune_dead_instance_dirs` reads exactly
+/// that to tell a live instance from a crashed one.
+static INSTANCE_LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
+/// Marks this process's webview data directory as in use.
+///
+/// Best-effort: a lock we cannot take costs us the protection below, never
+/// the ability to start.
+fn claim_instance_dir(dir: &std::path::Path) {
+    let _ = std::fs::create_dir_all(dir);
+    let Ok(file) = std::fs::File::create(dir.join(LOCK_FILE)) else {
+        return;
+    };
+    if file.try_lock().is_ok() {
+        let _ = INSTANCE_LOCK.set(file);
+    }
+}
+
+const LOCK_FILE: &str = ".instance-lock";
+
 /// Removes `instance-*` webview data directories left behind by past runs.
-/// PIDs are reused by the OS, so we can't check liveness directly; a run
-/// older than a day is assumed to have exited (or crashed) already.
-fn prune_stale_instance_dirs(instances_dir: &std::path::Path) {
+///
+/// Liveness is read from the lock file each instance holds open, not from a
+/// timestamp: a directory's mtime only moves when entries are created or
+/// removed *directly* in it, and the webview engines write into
+/// subdirectories — so a session left open overnight looks untouched and the
+/// next launch would delete the profile out from under it.
+///
+/// A directory with no lock file predates this scheme; those fall back to the
+/// old age test, which is safe for them because nothing is holding them.
+fn prune_dead_instance_dirs(instances_dir: &std::path::Path) {
     let Ok(entries) = std::fs::read_dir(instances_dir) else {
         return;
     };
-    let cutoff = std::time::Duration::from_secs(24 * 60 * 60);
     for entry in entries.flatten() {
         let path = entry.path();
         let is_instance_dir = path.is_dir()
@@ -109,15 +137,37 @@ fn prune_stale_instance_dirs(instances_dir: &std::path::Path) {
         if !is_instance_dir {
             continue;
         }
-        let stale = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .and_then(|m| m.elapsed().map_err(|e| std::io::Error::other(e)))
-            .is_ok_and(|age| age > cutoff);
-        if stale {
+        if instance_is_dead(&path) {
             let _ = std::fs::remove_dir_all(&path);
         }
     }
+}
+
+/// Whether nothing is using `dir` any more.
+fn instance_is_dead(dir: &std::path::Path) -> bool {
+    // Opened for writing, not just reading: an exclusive lock on Windows
+    // needs a writable handle. `create(false)` so probing never leaves a
+    // lock file behind in a directory that had none.
+    let probe = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.join(LOCK_FILE));
+    match probe {
+        // Locked by a live instance, or unreadable for a reason we cannot
+        // interpret. Either way, leave it alone.
+        Ok(file) => matches!(file.try_lock(), Ok(())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => aged_out(dir),
+        Err(_) => false,
+    }
+}
+
+/// The pre-lock-file fallback: a directory nothing has written to in a day.
+fn aged_out(dir: &std::path::Path) -> bool {
+    const CUTOFF: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+    std::fs::metadata(dir)
+        .and_then(|m| m.modified())
+        .and_then(|m| m.elapsed().map_err(std::io::Error::other))
+        .is_ok_and(|age| age > CUTOFF)
 }
 
 /// The first window's root. Every other window is an `AppRoot` too — this
@@ -153,9 +203,13 @@ fn AppRoot(initial: Option<Workspace>) -> Element {
     );
 
     use_effect(move || {
-        let css = MAIN_CSS.replace('`', "\\`").replace("${", "\\${");
+        // Encoded as a JSON string rather than pasted into a template
+        // literal: hand-escaping covered the backtick and `${` but not the
+        // backslash, so a single `content: "\201C"` in the stylesheet would
+        // have been eaten by JS before CSS ever saw it.
+        let css = serde_json::Value::String(MAIN_CSS.to_string()).to_string();
         document::eval(&format!(
-            "if(!document.getElementById('ais-css')){{var s=document.createElement('style');s.id='ais-css';s.textContent=`{}`;document.head.appendChild(s);}}",
+            "if(!document.getElementById('ais-css')){{var s=document.createElement('style');s.id='ais-css';s.textContent={};document.head.appendChild(s);}}",
             css
         ));
     });

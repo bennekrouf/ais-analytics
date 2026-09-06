@@ -28,27 +28,61 @@ fn start_login<F>(
 {
     login_error.set(None);
     match az::open_login() {
-        Ok(()) => {
+        Ok(mut child) => {
             checking.set(true);
             spawn(async move {
                 // Two minutes: long enough for a browser sign-in with MFA,
                 // short enough that an abandoned one stops asking.
+                //
+                // Nothing is published until there is something to say. The
+                // old loop set the state on every pass, so five seconds after
+                // clicking "Connect" the screen reverted to "Not signed in"
+                // with a live button while this was still polling — and a
+                // second click started a second `az login` alongside the
+                // first.
+                let mut settled = None;
+                // `az login` exits when the flow finishes or is abandoned.
+                // One more poll after that, because the CLI writes its
+                // profile as it goes down and the check can just miss it.
+                let mut polls_after_exit = 0;
                 for _ in 0..24 {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     let state = tokio::task::spawn_blocking(az::check_login)
                         .await
                         .unwrap_or(AzLoginState::NotLoggedIn);
-                    let done = matches!(state, AzLoginState::LoggedIn { .. });
-                    az_state.set(state);
-                    checking.set(false);
-                    if done {
-                        on_signed_in();
+                    if matches!(state, AzLoginState::LoggedIn { .. }) {
+                        settled = Some(state);
                         break;
                     }
+                    if polls_after_exit > 0 || matches!(child.try_wait(), Ok(Some(_))) {
+                        polls_after_exit += 1;
+                        if polls_after_exit > 1 {
+                            settled = Some(state);
+                            break;
+                        }
+                    }
+                }
+
+                // Whatever happened, something has to reap it — including the
+                // abandoned case, where the browser tab is still open and the
+                // CLI will exit long after we stopped watching.
+                tokio::task::spawn_blocking(move || {
+                    let _ = child.wait();
+                });
+
+                let state = settled.unwrap_or(AzLoginState::NotLoggedIn);
+                let done = matches!(state, AzLoginState::LoggedIn { .. });
+                az_state.set(state);
+                checking.set(false);
+                if done {
+                    on_signed_in();
                 }
             });
         }
-        Err(e) => login_error.set(Some(e)),
+        Err(e) => {
+            login_error.set(Some(e));
+            checking.set(false);
+        }
     }
 }
 
@@ -56,33 +90,32 @@ fn start_login<F>(
 pub fn Welcome(props: WelcomeProps) -> Element {
     let mut az_state = use_signal(|| AzLoginState::AzNotFound);
     let mut checking = use_signal(|| true);
-    let mut workspaces = use_signal(Vec::<Workspace>::new);
+    // Held whole rather than split into "found" and "skipped" signals: the
+    // two halves only mean anything together, and `WorkspaceScan` already
+    // knows how to read them — an empty list from subscriptions nobody could
+    // open is not the same answer as an empty list from subscriptions that
+    // all replied.
+    let mut scan = use_signal(az::WorkspaceScan::default);
     let mut workspaces_error = use_signal(|| Option::<String>::None);
-    // Subscriptions that could not be read. Without these an expired session
-    // is indistinguishable from a tenant with no workspaces.
-    let mut skipped = use_signal(Vec::<az::SubscriptionError>::new);
     let mut loading_workspaces = use_signal(|| false);
     let mut selected_name = use_signal(String::new);
-    let mut login_error = use_signal(|| Option::<String>::None);
+    let login_error = use_signal(|| Option::<String>::None);
     let mut recent = use_signal(history::load_workspaces);
 
     let mut load_workspaces = move || {
         loading_workspaces.set(true);
         spawn(async move {
             match tokio::task::spawn_blocking(az::list_workspaces).await {
-                Ok(Ok(scan)) => {
-                    workspaces.set(scan.workspaces);
-                    skipped.set(scan.errors);
+                Ok(Ok(found)) => {
+                    scan.set(found);
                     workspaces_error.set(None);
                 }
                 Ok(Err(e)) => {
-                    workspaces.set(vec![]);
-                    skipped.set(vec![]);
+                    scan.set(az::WorkspaceScan::default());
                     workspaces_error.set(Some(e));
                 }
                 Err(e) => {
-                    workspaces.set(vec![]);
-                    skipped.set(vec![]);
+                    scan.set(az::WorkspaceScan::default());
                     workspaces_error.set(Some(e.to_string()));
                 }
             }
@@ -105,7 +138,9 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     });
 
     let is_logged_in = matches!(*az_state.read(), AzLoginState::LoggedIn { .. });
-    let list = workspaces.read().clone();
+    let found = scan.read().clone();
+    let list = found.workspaces.clone();
+    let skipped = found.errors.clone();
     // Every subscription either produced workspaces or produced an error, so
     // the two together are what was actually looked at.
     let subscription_count = list
@@ -113,7 +148,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
         .map(|w| w.subscription_id.as_str())
         .collect::<std::collections::BTreeSet<_>>()
         .len()
-        + skipped.read().len();
+        + skipped.len();
     let can_connect = !selected_name.read().is_empty();
 
     rsx! {
@@ -199,16 +234,16 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                 // "Nothing found" and "nothing could be read"
                                 // are different claims. Only make the first
                                 // one when every subscription answered.
-                                if skipped.read().is_empty() {
+                                if found.blind() {
+                                    div { class: "az-error",
+                                        "Could not read {skipped.len()} of "
+                                        "{subscription_count} subscriptions, so this is not "
+                                        "an answer about whether you have workspaces."
+                                    }
+                                } else {
                                     div { class: "az-hint",
                                         "No Log Analytics workspaces in any of your "
                                         "{subscription_count} subscriptions."
-                                    }
-                                } else {
-                                    div { class: "az-error",
-                                        "Could not read {skipped.read().len()} of "
-                                        "{subscription_count} subscriptions, so this is not "
-                                        "an answer about whether you have workspaces."
                                     }
                                 }
                             } else {
@@ -222,9 +257,9 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     }
                                 }
                             }
-                            if !skipped.read().is_empty() {
+                            if !skipped.is_empty() {
                                 div { class: "skipped-list",
-                                    if skipped.read().iter().any(|e| e.expired) {
+                                    if found.any_expired() {
                                         div { class: "az-error",
                                             "Your Azure session has expired. Sign in again and rescan — "
                                             "until then these subscriptions cannot be read at all."
@@ -241,7 +276,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             }
                                         }
                                     }
-                                    for e in skipped.read().iter() {
+                                    for e in skipped.iter() {
                                         div { class: "skipped-row",
                                             span { class: "dot error" }
                                             span { class: "skipped-name", "{e.name}" }
@@ -257,7 +292,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     disabled: !can_connect,
                                     onclick: {
                                         let list = list.clone();
-                                        let on_connect = props.on_connect.clone();
+                                        let on_connect = props.on_connect;
                                         move |_| {
                                             // Selected by GUID, not name: two
                                             // subscriptions can hold workspaces
@@ -294,7 +329,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             disabled: !is_logged_in,
                                             onclick: {
                                                 let ws = ws.clone();
-                                                let on_connect = props.on_connect.clone();
+                                                let on_connect = props.on_connect;
                                                 move |_| {
                                                     recent.set(history::record_workspace(&ws));
                                                     on_connect.call(ws.clone());

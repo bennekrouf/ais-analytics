@@ -10,7 +10,7 @@
 //! KQL can union and group server-side, so the whole scan is a handful of
 //! round-trips instead of one per entity.
 
-use crate::services::loganalytics::{table_ref, Client, ColumnMeta, TableMeta, TimeRange};
+use crate::services::loganalytics::{Client, ColumnMeta, TableMeta, TimeRange, table_ref};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -85,15 +85,44 @@ impl FieldInfo {
     }
 }
 
+/// A workspace scan, and what it could not look at.
+///
+/// The second half exists for the same reason `az::WorkspaceScan::errors`
+/// does: a table nobody could read holds no rows *as far as we know*, and
+/// that is a different claim from holding none. Without this the view draws
+/// a throttled or half-denied scan exactly like an idle workspace.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Scan {
+    pub schemas: Vec<TableSchema>,
+    /// Tables whose sample query failed. They still appear in `schemas`,
+    /// carrying their declared columns and `unread: true`.
+    pub unread: Vec<String>,
+    /// One representative failure, for the message the user reads.
+    pub error: Option<String>,
+}
+
+impl Scan {
+    /// Whether anything at all could not be read.
+    pub fn partial(&self) -> bool {
+        !self.unread.is_empty()
+    }
+}
+
 /// One table, as declared plus as sampled.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TableSchema {
     pub table: String,
     pub sampled_rows: usize,
     /// Rows seen in the scanned window. Zero means the table exists in the
-    /// workspace schema but held nothing in range.
+    /// workspace schema but held nothing in range — unless `unread` is set,
+    /// in which case it means nothing at all.
     #[serde(default)]
     pub rows_in_range: usize,
+    /// The sample query covering this table failed, so `rows_in_range` and
+    /// `sampled_rows` are absence of evidence rather than evidence of
+    /// absence.
+    #[serde(default)]
+    pub unread: bool,
     pub fields: Vec<FieldInfo>,
 }
 
@@ -112,30 +141,39 @@ impl TableSchema {
 /// are kept, with `rows_in_range: 0`. That distinction matters downstream:
 /// an empty table with the correlation column is "nothing arrived yet",
 /// which is a different statement from "not on this path".
-pub async fn scan(
-    client: &Client,
-    workspace_id: &str,
-    range: TimeRange,
-) -> Result<Vec<TableSchema>, String> {
+///
+/// A chunk that fails does not lose the rest of the workspace — but it is
+/// recorded rather than swallowed. Dropping it on the floor made a throttled
+/// or partially-denied scan render as a workspace where nothing has any
+/// data, which is the one reading the rest of this app works hard to avoid.
+pub async fn scan(client: &Client, workspace_id: &str, range: TimeRange) -> Result<Scan, String> {
     let declared = client.tables(workspace_id).await?;
     if declared.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Scan::default());
     }
 
     let by_name: BTreeMap<&str, &TableMeta> =
         declared.iter().map(|t| (t.name.as_str(), t)).collect();
     let mut out: Vec<TableSchema> = Vec::new();
+    let mut unread: BTreeSet<String> = BTreeSet::new();
+    let mut error: Option<String> = None;
+    let mut chunks = 0usize;
+    let mut failed_chunks = 0usize;
 
     for chunk in declared.chunks(TABLES_PER_QUERY) {
+        chunks += 1;
         let names: Vec<&str> = chunk.iter().map(|t| t.name.as_str()).collect();
-        // A single failing chunk shouldn't lose the rest of the workspace —
-        // one retired table or one Basic-tier table that rejects `union` is
-        // not a reason to show the user nothing.
-        let Ok(rows) = client
+        let rows = match client
             .query(workspace_id, &sample_query(&names), range)
             .await
-        else {
-            continue;
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                failed_chunks += 1;
+                unread.extend(names.iter().map(|n| (*n).to_string()));
+                error.get_or_insert(e);
+                continue;
+            }
         };
 
         for row in rows {
@@ -154,13 +192,22 @@ pub async fn scan(
         }
     }
 
+    // Nothing answered anywhere, so an empty result says nothing about the
+    // workspace. Report it as the failure it is rather than as an idle
+    // workspace the user is then left staring at.
+    if chunks > 0 && failed_chunks == chunks {
+        return Err(error.unwrap_or_else(|| "the workspace could not be sampled".to_string()));
+    }
+
     // Tables the sample query returned nothing for: they exist, they are
     // just empty in this window. Carry them with their declared columns so
     // the view can still say whether they are on the path.
     let sampled: BTreeSet<String> = out.iter().map(|s| s.table.clone()).collect();
     for meta in &declared {
         if !sampled.contains(&meta.name) {
-            out.push(summarise(&meta.name, 0, &[], Some(meta)));
+            let mut schema = summarise(&meta.name, 0, &[], Some(meta));
+            schema.unread = unread.contains(&meta.name);
+            out.push(schema);
         }
     }
 
@@ -169,7 +216,11 @@ pub async fn scan(
             .cmp(&a.rows_in_range)
             .then(a.table.cmp(&b.table))
     });
-    Ok(out)
+    Ok(Scan {
+        schemas: out,
+        unread: unread.into_iter().collect(),
+        error,
+    })
 }
 
 /// Counts and samples a batch of tables in one round-trip.
@@ -225,10 +276,11 @@ fn summarise(
                 entry.types.push(ty);
             }
             entry.seen_in += 1;
-            if let Some(scalar) = scalar_repr(&value) {
-                if entry.values.len() < VALUE_CAP && entry.values.insert(scalar) {
-                    entry.distinct += 1;
-                }
+            if let Some(scalar) = scalar_repr(&value)
+                && entry.values.len() < VALUE_CAP
+                && entry.values.insert(scalar)
+            {
+                entry.distinct += 1;
             }
         }
     }
@@ -265,6 +317,7 @@ fn summarise(
         table: table.to_string(),
         sampled_rows: sampled,
         rows_in_range,
+        unread: false,
         fields,
     }
 }
@@ -442,6 +495,30 @@ mod tests {
         assert_eq!(level.fill(3), 1.0);
         // Two distinct values across three rows — a status, not an identity.
         assert!(level.distinct_ratio() < 0.7);
+    }
+
+    /// The distinction the whole change rests on: a table nobody could read
+    /// must not be presented as a table that holds nothing.
+    #[test]
+    fn an_unread_table_is_not_an_empty_one() {
+        let empty = summarise("AppRequests", 0, &[], None);
+        assert!(!empty.unread, "a genuinely idle table is read and empty");
+
+        let mut denied = summarise("AzureDiagnostics", 0, &[], None);
+        denied.unread = true;
+        assert_eq!(denied.rows_in_range, 0);
+        assert!(
+            denied.unread,
+            "zero rows here is absence of evidence, not evidence of absence"
+        );
+
+        let partial = Scan {
+            schemas: vec![empty, denied],
+            unread: vec!["AzureDiagnostics".into()],
+            error: Some("throttled by Azure".into()),
+        };
+        assert!(partial.partial());
+        assert!(!Scan::default().partial(), "an empty workspace is complete");
     }
 
     #[test]

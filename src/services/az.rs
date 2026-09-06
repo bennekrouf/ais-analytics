@@ -169,17 +169,20 @@ pub fn check_login() -> AzLoginState {
 
 /// Opens `az login` (non-blocking) so the desktop app doesn't have to embed
 /// its own OAuth flow.
-pub fn open_login() -> Result<(), String> {
-    az_command_with_console(&["login"])
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                "Azure CLI ('az') not found on PATH.".to_string()
-            } else {
-                format!("Failed to start 'az login': {e}")
-            }
-        })
+///
+/// The child is returned rather than dropped. The caller has to reap it:
+/// `az login` outlives this call by however long the browser flow takes, and
+/// a `Child` that is dropped without a `wait` leaves a zombie behind on every
+/// sign-in attempt for the rest of the process's life. Its exit is also the
+/// only signal that the user finished — or abandoned — the flow.
+pub fn open_login() -> Result<std::process::Child, String> {
+    az_command_with_console(&["login"]).spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "Azure CLI ('az') not found on PATH.".to_string()
+        } else {
+            format!("Failed to start 'az login': {e}")
+        }
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

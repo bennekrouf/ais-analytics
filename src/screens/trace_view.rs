@@ -16,6 +16,14 @@ const CARD_GAP: f64 = 10.0;
 const PAD: f64 = 20.0;
 /// Width the timeline gets when nothing forces it wider.
 const BASE_TRACK: f64 = 900.0;
+/// The span, in pixels, that the whole time range maps onto.
+///
+/// Fixed rather than derived from the rendered track width: a lane full of
+/// simultaneous events pushes the *track* wider (see `place`), but that
+/// widening is overflow, not a rescaling. Deriving the axis from the track
+/// while placing cards against this constant is what made the axis label a
+/// card's time hundreds of pixels away from the card.
+const TIME_SPAN: f64 = BASE_TRACK - CARD_W - 2.0 * PAD;
 const TICKS: usize = 5;
 
 #[derive(Props, Clone, PartialEq)]
@@ -46,7 +54,7 @@ pub fn TraceView(props: TraceViewProps) -> Element {
         .iter()
         .filter(|l| l.state == LaneState::OffPath)
         .collect();
-    let ticks = axis_ticks(trace, track_w);
+    let ticks = axis_ticks(trace);
     // A red card can sit far off-screen on a wide timeline, so the count has
     // to be visible without scrolling to find it.
     let errored = trace
@@ -187,7 +195,7 @@ fn LaneRow(props: LaneRowProps) -> Element {
     let class = match lane.state {
         LaneState::Reached => "lane reached",
         LaneState::Awaiting => "lane awaiting",
-        LaneState::Failed(_) => "lane failed",
+        LaneState::Failed => "lane failed",
         LaneState::OffPath => "lane off-path",
     };
     // How long after the first event anywhere this stage saw the value.
@@ -212,7 +220,7 @@ fn LaneRow(props: LaneRowProps) -> Element {
                     LaneState::Awaiting => rsx! {
                         div { class: "lane-note", "awaiting — no row with this value" }
                     },
-                    LaneState::Failed(_) => rsx! {
+                    LaneState::Failed => rsx! {
                         div { class: "lane-note error",
                             "query failed: {lane.error.clone().unwrap_or_default()}"
                         }
@@ -259,7 +267,6 @@ fn LaneRow(props: LaneRowProps) -> Element {
 /// cards apart within their lane. Blocks with no usable timestamp fall back
 /// to sequence order after the ones that have times.
 fn place(trace: &Trace) -> (Vec<PlacedLane>, f64) {
-    let usable = BASE_TRACK - CARD_W - 2.0 * PAD;
     let mut out = Vec::new();
     let mut widest = BASE_TRACK;
 
@@ -270,7 +277,7 @@ fn place(trace: &Trace) -> (Vec<PlacedLane>, f64) {
         for block in &lane.blocks {
             let x = match (block.at, trace.span) {
                 (Some(at), Some((lo, hi))) if hi > lo => {
-                    PAD + ((at - lo) as f64 / (hi - lo) as f64) * usable
+                    PAD + ((at - lo) as f64 / (hi - lo) as f64) * TIME_SPAN
                 }
                 (Some(_), _) => PAD,
                 (None, _) => {
@@ -302,6 +309,27 @@ fn place(trace: &Trace) -> (Vec<PlacedLane>, f64) {
     }
 
     (out, widest)
+}
+
+fn axis_ticks(trace: &Trace) -> Vec<(f64, String)> {
+    let Some((lo, hi)) = trace.span else {
+        return Vec::new();
+    };
+    if hi <= lo {
+        return vec![(PAD, trace::format_time(lo))];
+    }
+    (0..TICKS)
+        .map(|i| {
+            let frac = i as f64 / (TICKS - 1) as f64;
+            let at = lo + ((hi - lo) as f64 * frac) as i64;
+            let text = if i == 0 {
+                trace::format_time(at)
+            } else {
+                trace::format_gap(at - lo)
+            };
+            (PAD + frac * TIME_SPAN, text)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -426,7 +454,33 @@ mod tests {
         let t = trace_of(vec![lane("db/a", LaneState::Reached, vec![block(Some(7))])]);
         let (placed, _) = place(&t);
         assert_eq!(placed[0].blocks[0].0, PAD);
-        assert_eq!(axis_ticks(&t, BASE_TRACK).len(), 1);
+        assert_eq!(axis_ticks(&t).len(), 1);
+    }
+
+    /// The axis and the cards must share one scale. Cards colliding in one
+    /// lane widen the track; deriving the tick positions from that widened
+    /// width put the label for the latest event ~1300px right of the card it
+    /// described.
+    #[test]
+    fn the_axis_still_describes_the_cards_on_a_widened_track() {
+        let mut crowded: Vec<Block> = (0..12).map(|_| block(Some(0))).collect();
+        crowded.push(block(Some(60_000)));
+        let t = trace_of(vec![
+            lane("busy", LaneState::Reached, crowded),
+            // Uncrowded, so this card sits exactly where its time says.
+            lane("calm", LaneState::Reached, vec![block(Some(60_000))]),
+        ]);
+
+        let (placed, track_w) = place(&t);
+        assert!(track_w > BASE_TRACK, "the track must have widened");
+
+        let calm = placed.iter().find(|p| p.lane.name == "calm").unwrap();
+        let ticks = axis_ticks(&t);
+        assert_eq!(
+            ticks[TICKS - 1].0,
+            calm.blocks[0].0,
+            "the last tick marks the last event, so it must land on its card"
+        );
     }
 
     #[test]
@@ -435,31 +489,9 @@ mod tests {
             lane("db/a", LaneState::Reached, vec![block(Some(0))]),
             lane("db/b", LaneState::Reached, vec![block(Some(60_000))]),
         ]);
-        let ticks = axis_ticks(&t, BASE_TRACK);
+        let ticks = axis_ticks(&t);
         assert_eq!(ticks.len(), TICKS);
         assert_eq!(ticks[0].0, PAD);
         assert_eq!(ticks[TICKS - 1].1, "+1.0min");
     }
-}
-
-fn axis_ticks(trace: &Trace, track_w: f64) -> Vec<(f64, String)> {
-    let Some((lo, hi)) = trace.span else {
-        return Vec::new();
-    };
-    if hi <= lo {
-        return vec![(PAD, trace::format_time(lo))];
-    }
-    let usable = track_w - CARD_W - 2.0 * PAD;
-    (0..TICKS)
-        .map(|i| {
-            let frac = i as f64 / (TICKS - 1) as f64;
-            let at = lo + ((hi - lo) as f64 * frac) as i64;
-            let text = if i == 0 {
-                trace::format_time(at)
-            } else {
-                trace::format_gap(at - lo)
-            };
-            (PAD + frac * usable, text)
-        })
-        .collect()
 }
