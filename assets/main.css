@@ -1130,3 +1130,109 @@ table.schema-table tr.key-row:hover td { background: rgba(var(--blue-rgb), 0.16)
 }
 .skipped-name { color: var(--text2); white-space: nowrap; }
 .skipped-why { color: var(--text3); }
+
+/* ── Signals ──────────────────────────────────────────────────────────────
+   Rate, failures and latency. The bars are deliberately unlabelled: they
+   carry the shape of the window, and the numbers that matter are stated
+   above them rather than crowded into an axis. */
+
+.sig-stats { display: flex; gap: 32px; margin: 4px 0 16px; }
+.sig-stat { display: flex; flex-direction: column; gap: 2px; }
+.sig-value { font-size: 26px; font-weight: 600; color: var(--text1); line-height: 1.1; }
+.sig-value.bad { color: var(--red); }
+.sig-label { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* One scale for both series, so a failure bar reads as a proportion of the
+   traffic beside it rather than as a chart of its own. */
+.sig-bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 1px;
+    height: 120px;
+    padding: 0 2px;
+    border-bottom: 1px solid var(--border);
+}
+.sig-bar { position: relative; flex: 1 1 0; min-width: 2px; height: 100%; display: flex; align-items: flex-end; }
+.sig-bar-total { width: 100%; background: var(--blue-bg); border-radius: 1px 1px 0 0; }
+.sig-bar:hover .sig-bar-total { background: var(--blue); }
+.sig-bar-failed { position: absolute; left: 0; bottom: 0; width: 100%; background: var(--red); border-radius: 1px 1px 0 0; }
+
+.op-table { display: flex; flex-direction: column; gap: 1px; margin-top: 8px; }
+.op-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto auto auto;
+    gap: 16px;
+    align-items: center;
+    padding: 6px 10px;
+    background: var(--bg1);
+    border-radius: 4px;
+    font-size: 13px;
+}
+.op-row.failing { background: rgba(var(--red-rgb), 0.08); }
+.op-label { color: var(--text1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.op-num { color: var(--text2); font-variant-numeric: tabular-nums; text-align: right; min-width: 72px; }
+.op-num.bad { color: var(--red); }
+.op-trace {
+    font-family: inherit;
+    font-size: 12px;
+    padding: 2px 10px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: var(--bg2);
+    color: var(--blue);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.op-trace:hover { background: var(--blue-bg); color: #fff; border-color: var(--blue-bg); }
+.op-trace.muted { color: var(--text3); border-color: transparent; background: none; cursor: default; }
+
+/* ── Logs ─────────────────────────────────────────────────────────────────
+   A dense stream. Severity tints the row rather than adding a badge column,
+   so the message keeps the width it needs. */
+
+.log-filters { display: flex; gap: 8px; align-items: center; margin: 8px 0 4px; }
+.log-search {
+    flex: 1 1 auto;
+    font-family: inherit;
+    font-size: 13px;
+    padding: 5px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg0);
+    color: var(--text1);
+}
+.log-search:focus { outline: none; border-color: var(--blue); }
+.log-severity {
+    font-family: inherit;
+    font-size: 12px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg2);
+    color: var(--text2);
+}
+
+.log-list { display: flex; flex-direction: column; gap: 1px; margin-top: 8px; }
+.log-row {
+    display: grid;
+    grid-template-columns: 68px auto 1fr auto;
+    gap: 10px;
+    align-items: baseline;
+    padding: 4px 10px;
+    background: var(--bg1);
+    border-radius: 3px;
+    font-size: 12.5px;
+    border-left: 2px solid transparent;
+}
+.log-row.warn { border-left-color: var(--yellow); }
+.log-row.bad  { border-left-color: var(--red); background: rgba(var(--red-rgb), 0.07); }
+.log-at { color: var(--text3); font-variant-numeric: tabular-nums; }
+.log-sev { color: var(--text3); font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+.log-row.bad .log-sev { color: var(--red); }
+.log-row.warn .log-sev { color: var(--yellow); }
+.log-msg {
+    color: var(--text1);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

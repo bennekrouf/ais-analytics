@@ -76,6 +76,28 @@ else
 fi
 echo ""
 
+# ── Release notes ─────────────────────────────────────────────────────────────
+# CHANGELOG.md is what the GitHub Release body and the public releases page are
+# both built from, so a release with nothing written in it ships a version
+# number and no explanation. Warn, don't block: a build-only release is a real
+# thing and the entry can also be written after the fact.
+CHANGELOG="CHANGELOG.md"
+NOTES_STATE="missing"
+if [[ -f "$CHANGELOG" ]]; then
+    if grep -q "^## \[$NEW\]" "$CHANGELOG"; then
+        NOTES_STATE="dated"
+    elif awk '/^## \[[Uu]nreleased\]/{f=1;next} /^## /{f=0} f && /^- /{found=1} END{exit !found}' "$CHANGELOG"; then
+        NOTES_STATE="unreleased"
+    fi
+fi
+
+case "$NOTES_STATE" in
+    dated)      echo "  Release notes: CHANGELOG.md already has a [$NEW] section" ;;
+    unreleased) echo "  Release notes: [Unreleased] -> [$NEW] (dated $(date +%F))" ;;
+    missing)    echo "  Release notes: NOTHING under [Unreleased] — $TAG will ship with no notes" ;;
+esac
+echo ""
+
 $DRY_RUN && { echo "Dry run — nothing done."; exit 0; }
 
 if [[ -t 0 ]]; then
@@ -104,6 +126,18 @@ fi
 # for every release.
 cargo metadata --format-version 1 --quiet >/dev/null
 
+# Stamp the notes with the version they are shipping in. CI can do this for
+# itself when generating the feed, but only the file in the repository is what
+# the next release reads, so the heading is settled here once.
+if [[ "$NOTES_STATE" == "unreleased" ]]; then
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "s/^## \[[Uu]nreleased\].*$/## [$NEW] - $(date +%F)/" "$CHANGELOG"
+    else
+        sed -i    "s/^## \[[Uu]nreleased\].*$/## [$NEW] - $(date +%F)/" "$CHANGELOG"
+    fi
+    git add "$CHANGELOG"
+fi
+
 git add "$CARGO" Cargo.lock
 git commit -m "chore: release $TAG"
 git tag "$TAG"
@@ -114,3 +148,4 @@ git push origin "$TAG"
 echo ""
 echo "  $TAG pushed — CI is running."
 echo "  https://github.com/bennekrouf/ais-analytics/actions"
+echo "  Releases page  -> https://mayorana.ch/en/apps/ais-analytics/releases"

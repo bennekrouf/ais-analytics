@@ -121,6 +121,18 @@ pub struct Insights {
     pub keys: Vec<KeyCandidate>,
     pub times: Vec<RoleCandidate>,
     pub labels: Vec<RoleCandidate>,
+    /// How long each step took, when the data says so. Unlike the other
+    /// roles this one is often absent, and the views that use it degrade
+    /// rather than refuse.
+    pub durations: Vec<RoleCandidate>,
+    /// What a log line actually says — the long, varied column, as opposed
+    /// to the short repeated one that makes a good label.
+    pub messages: Vec<RoleCandidate>,
+    /// How bad a line is. Few distinct values, and a name that says so.
+    pub severities: Vec<RoleCandidate>,
+    /// What a call went *to* — the other side of a dependency. Repeated by
+    /// nature: a handful of systems answer thousands of calls.
+    pub targets: Vec<RoleCandidate>,
 }
 
 impl KeyCandidate {
@@ -130,12 +142,56 @@ impl KeyCandidate {
     }
 }
 
+/// Whether a table is worth drawing as a lane at all.
+///
+/// The `metadata` endpoint answers with the whole Log Analytics catalogue —
+/// 681 tables on a workspace that ingests twelve — because every table Azure
+/// *could* route here is declared whether or not anything ever did. Keeping
+/// them turns "not on this key's path" into a wall of several hundred names
+/// nobody has ever heard of, and buries the handful that mean something.
+///
+/// Rows in the window are the only signal that separates the two: the
+/// catalogue entries are empty by definition. Note that this *sharpens* the
+/// empty lane rather than dropping it — a table that held rows in range but
+/// none for this key is still drawn as awaiting, and that is exactly the
+/// case worth seeing. What goes is the table the workspace has never used.
+///
+/// An unread table is kept regardless. Its emptiness is a failed sample, not
+/// an observation, and the whole point of tracking `unread` is to avoid
+/// stating the one as if it were the other.
+fn worth_a_lane(schema: &TableSchema) -> bool {
+    schema.unread || schema.rows_in_range > 0
+}
+
+/// The tables the workspace actually uses, out of everything it declares.
+///
+/// Every list a user picks from should be built on this rather than on the
+/// raw scan. Left unfiltered, a catalogue entry inflates each count they
+/// read ("present in 28 tables" over a workspace holding eleven) and fills
+/// the column pickers with names from services nobody here runs.
+///
+/// The one screen that wants the raw scan is the table list itself, which
+/// says "11 of 681 with data in range" — there the ratio is the message.
+pub fn live(schemas: &[TableSchema]) -> Vec<TableSchema> {
+    schemas
+        .iter()
+        .filter(|s| worth_a_lane(s))
+        .cloned()
+        .collect()
+}
+
 pub fn analyze(schemas: &[TableSchema]) -> Insights {
+    let live = live(schemas);
+
     Insights {
-        tables: schemas.iter().map(TableSchema::path).collect(),
-        keys: key_candidates(schemas),
-        times: time_candidates(schemas),
-        labels: label_candidates(schemas),
+        tables: live.iter().map(TableSchema::path).collect(),
+        keys: key_candidates(&live),
+        times: time_candidates(&live),
+        labels: label_candidates(&live),
+        durations: duration_candidates(&live),
+        messages: message_candidates(&live),
+        severities: severity_candidates(&live),
+        targets: target_candidates(&live),
     }
 }
 
@@ -596,6 +652,260 @@ fn time_candidates(schemas: &[TableSchema]) -> Vec<RoleCandidate> {
     out
 }
 
+/// Names that mean "how long this took" rather than "how much of it there
+/// was". A number on its own is not a duration — a byte count and a retry
+/// count are numbers too — so unlike the correlation key, this role is
+/// decided by the name and merely *confirmed* by the type.
+const DURATION_HINTS: [&str; 8] = [
+    "duration",
+    "elapsed",
+    "latency",
+    "timetaken",
+    "time_taken",
+    "responsetime",
+    "processingtime",
+    "runtime",
+];
+
+fn is_duration_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    DURATION_HINTS.iter().any(|hint| lower.contains(hint))
+}
+
+/// How long a step took, as a role the views can ask for.
+///
+/// This is the second dimension of a trace: without it a timeline shows when
+/// things happened but not what they cost, and "which call is slow" cannot
+/// be answered at all. It is offered rather than assumed, because plenty of
+/// workspaces record no duration anywhere.
+///
+/// A declared `timespan` needs no name — the type already says what it is.
+/// Everything else must both look like a duration and hold a number.
+fn duration_candidates(schemas: &[TableSchema]) -> Vec<RoleCandidate> {
+    let mut by_key: BTreeMap<String, (String, Vec<String>, bool)> = BTreeMap::new();
+
+    for schema in schemas {
+        let path = schema.path();
+        for field in &schema.fields {
+            if is_system(&field.name) {
+                continue;
+            }
+            let declared = field.kind == "timespan";
+            if !declared && !(is_duration_name(&field.name) && field.is_number()) {
+                continue;
+            }
+            let entry = by_key
+                .entry(field.name.to_lowercase())
+                .or_insert_with(|| (field.name.clone(), Vec::new(), false));
+            entry.1.push(path.clone());
+            entry.2 |= declared;
+        }
+    }
+
+    let mut out: Vec<RoleCandidate> = by_key
+        .into_iter()
+        .map(|(id, (label, tables, declared))| {
+            let note = if declared {
+                format!("declared timespan, in {} table(s)", tables.len())
+            } else {
+                // Saying which unit is assumed matters: a p95 quoted in the
+                // wrong one is wrong by three orders of magnitude, and looks
+                // perfectly plausible either way.
+                format!(
+                    "numeric duration, read as {}, in {} table(s)",
+                    unit_of(&id),
+                    tables.len()
+                )
+            };
+            RoleCandidate {
+                score: tables.len() as f32 + if declared { 0.5 } else { 0.0 },
+                note,
+                id,
+                label,
+                tables,
+            }
+        })
+        .collect();
+
+    out.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.label.cmp(&b.label))
+    });
+    out
+}
+
+/// The unit a numeric duration is in, guessed from its name. Milliseconds is
+/// the default because it is what every telemetry SDK in reach emits.
+///
+/// Note what is deliberately *not* read as a unit: Log Analytics suffixes
+/// custom-log columns by type, so `Duration_s` is a duration stored as a
+/// string and `Duration_d` one stored as a double. Neither says seconds.
+/// Treating `_s` as a unit would misread every `_CL` table in the workspace.
+pub fn unit_of(id: &str) -> &'static str {
+    let lower = id.to_lowercase();
+    if lower.ends_with("seconds") || lower.ends_with("secs") {
+        "seconds"
+    } else if lower.ends_with("micros") || lower.ends_with("microseconds") {
+        "microseconds"
+    } else {
+        "milliseconds"
+    }
+}
+
+/// Free text is the opposite of a label: a label repeats, a message does
+/// not. So this role is decided by shape — long values, nearly all of them
+/// different — with the name only breaking ties.
+const MESSAGE_HINTS: [&str; 6] = ["message", "msg", "description", "body", "text", "detail"];
+
+/// Below this a value is a code or a status, not prose.
+const MESSAGE_MIN_LEN: usize = 24;
+
+fn message_candidates(schemas: &[TableSchema]) -> Vec<RoleCandidate> {
+    let mut by_key: BTreeMap<String, (String, Vec<String>, bool)> = BTreeMap::new();
+
+    for schema in schemas {
+        let path = schema.path();
+        for field in &schema.fields {
+            if is_system(&field.name) || !field.is_scalar() || field.values.is_empty() {
+                continue;
+            }
+            let named = MESSAGE_HINTS
+                .iter()
+                .any(|h| field.name.to_lowercase().contains(h));
+            let total: usize = field.values.iter().map(|v| v.chars().count()).sum();
+            let long = total / field.values.len().max(1) >= MESSAGE_MIN_LEN;
+            // Nearly every sampled value distinct: prose, not a status.
+            let varied = field.distinct * 4 >= field.seen_in * 3;
+            if !named && !(long && varied) {
+                continue;
+            }
+            let entry = by_key
+                .entry(field.name.to_lowercase())
+                .or_insert_with(|| (field.name.clone(), Vec::new(), false));
+            entry.1.push(path.clone());
+            entry.2 |= named;
+        }
+    }
+
+    ranked(by_key, |tables, named| {
+        if named {
+            format!("free text, in {} table(s)", tables)
+        } else {
+            format!("long and varied, in {} table(s)", tables)
+        }
+    })
+}
+
+/// Names that mean "how bad is this line". A severity is short, repeated and
+/// named — all three, because a column with three distinct values is just as
+/// likely to be a region or a tier.
+const SEVERITY_HINTS: [&str; 5] = ["severity", "level", "loglevel", "sev", "criticality"];
+
+/// More distinct values than this and it is a category, not a severity.
+const SEVERITY_MAX_DISTINCT: usize = 12;
+
+fn severity_candidates(schemas: &[TableSchema]) -> Vec<RoleCandidate> {
+    let mut by_key: BTreeMap<String, (String, Vec<String>, bool)> = BTreeMap::new();
+
+    for schema in schemas {
+        let path = schema.path();
+        for field in &schema.fields {
+            if is_system(&field.name) || !field.is_scalar() {
+                continue;
+            }
+            let lower = field.name.to_lowercase();
+            if !SEVERITY_HINTS.iter().any(|h| lower.contains(h)) {
+                continue;
+            }
+            if field.distinct > SEVERITY_MAX_DISTINCT {
+                continue;
+            }
+            let entry = by_key
+                .entry(lower)
+                .or_insert_with(|| (field.name.clone(), Vec::new(), false));
+            entry.1.push(path.clone());
+            entry.2 = true;
+        }
+    }
+
+    ranked(by_key, |tables, _| {
+        format!("severity, in {tables} table(s)")
+    })
+}
+
+/// Names that mean "the other end of this call".
+const TARGET_HINTS: [&str; 7] = [
+    "target",
+    "dependency",
+    "endpoint",
+    "downstream",
+    "remote",
+    "host",
+    "server",
+];
+
+/// A dependency target is repeated by nature — a handful of systems answer
+/// thousands of calls — which is what separates it from the full URL sitting
+/// in the next column. Grouping on that URL would produce one row per call
+/// and say nothing at all.
+fn target_candidates(schemas: &[TableSchema]) -> Vec<RoleCandidate> {
+    let mut by_key: BTreeMap<String, (String, Vec<String>, bool)> = BTreeMap::new();
+
+    for schema in schemas {
+        let path = schema.path();
+        for field in &schema.fields {
+            if is_system(&field.name) || !field.is_scalar() {
+                continue;
+            }
+            let lower = field.name.to_lowercase();
+            if !TARGET_HINTS.iter().any(|h| lower.contains(h)) {
+                continue;
+            }
+            // Every sampled value different: an identifier or a URL, not a
+            // target worth grouping on.
+            if field.seen_in > 4 && field.distinct >= field.seen_in {
+                continue;
+            }
+            let entry = by_key
+                .entry(lower)
+                .or_insert_with(|| (field.name.clone(), Vec::new(), false));
+            entry.1.push(path.clone());
+            entry.2 = true;
+        }
+    }
+
+    ranked(by_key, |tables, _| {
+        format!("call target, in {tables} table(s)")
+    })
+}
+
+/// Shared tail of the role detectors: score by reach, describe, sort.
+fn ranked(
+    by_key: BTreeMap<String, (String, Vec<String>, bool)>,
+    note: impl Fn(usize, bool) -> String,
+) -> Vec<RoleCandidate> {
+    let mut out: Vec<RoleCandidate> = by_key
+        .into_iter()
+        .map(|(id, (label, tables, named))| RoleCandidate {
+            score: tables.len() as f32 + if named { 0.5 } else { 0.0 },
+            note: note(tables.len(), named),
+            id,
+            label,
+            tables,
+        })
+        .collect();
+
+    out.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.label.cmp(&b.label))
+    });
+    out
+}
+
 fn label_candidates(schemas: &[TableSchema]) -> Vec<RoleCandidate> {
     let mut by_key: BTreeMap<String, (String, Vec<String>, usize)> = BTreeMap::new();
 
@@ -794,12 +1104,16 @@ mod tests {
         }
     }
 
+    /// A table the workspace actually uses. `rows_in_range` floors at one so
+    /// the fixture keeps meaning "this table is live" even when no sampled
+    /// row filled the column under test — the cases that are genuinely empty
+    /// set it back to zero themselves.
     fn table(name: &str, fields: Vec<FieldInfo>) -> TableSchema {
         let sampled = fields.iter().map(|f| f.seen_in).max().unwrap_or(0);
         TableSchema {
             table: name.into(),
             sampled_rows: sampled,
-            rows_in_range: sampled,
+            rows_in_range: sampled.max(1),
             unread: false,
             fields,
         }
@@ -1251,5 +1565,199 @@ mod tests {
             insights.labels.iter().all(|c| c.label != "TimeGenerated"),
             "a timestamp is not a step label"
         );
+    }
+
+    /// The `metadata` endpoint declares every table Azure could route to the
+    /// workspace, so a twelve-table workspace answers with several hundred.
+    /// Listing those as lanes drowns the ones that carry data.
+    #[test]
+    fn catalogue_tables_the_workspace_never_used_are_not_lanes() {
+        let mut empty = table("AACAudit", vec![field("OperationId", &[])]);
+        empty.rows_in_range = 0;
+        empty.sampled_rows = 0;
+
+        let schemas = vec![
+            table("AppTraces", vec![field("OperationId", &uuids())]),
+            empty,
+        ];
+
+        let insights = analyze(&schemas);
+        assert_eq!(insights.tables, vec!["AppTraces".to_string()]);
+        assert!(
+            insights
+                .keys
+                .iter()
+                .all(|k| k.bindings.iter().all(|b| b.table == "AppTraces")),
+            "a catalogue entry must not inflate a key's table count either"
+        );
+    }
+
+    /// The lane that matters most: a table that is demonstrably live, but
+    /// which this particular flow never reached. Filtering the catalogue must
+    /// not take these with it.
+    #[test]
+    fn a_populated_table_without_the_key_is_still_a_lane() {
+        let schemas = vec![
+            table("AppRequests", vec![field("OperationId", &uuids())]),
+            table("StorageBlobLogs", vec![field("AccountName", &["stprod"])]),
+        ];
+
+        let insights = analyze(&schemas);
+        assert!(
+            insights.tables.contains(&"StorageBlobLogs".to_string()),
+            "a live table off the key's path is the empty lane worth drawing"
+        );
+    }
+
+    /// A sample that failed says nothing about whether the table holds rows,
+    /// and reporting it as unused would state absence of evidence as
+    /// evidence of absence.
+    #[test]
+    fn an_unread_table_survives_even_with_no_rows() {
+        let mut unread = table("AzureDiagnostics", vec![]);
+        unread.rows_in_range = 0;
+        unread.sampled_rows = 0;
+        unread.unread = true;
+
+        let insights = analyze(&[unread]);
+        assert_eq!(insights.tables, vec!["AzureDiagnostics".to_string()]);
+    }
+
+    /// The second dimension of a trace: when a step happened is not what it
+    /// cost, and "which call is slow" needs the latter.
+    #[test]
+    fn numeric_columns_named_like_a_duration_are_offered() {
+        let schemas = vec![table(
+            "AppRequests",
+            vec![FieldInfo {
+                kind: "real".into(),
+                types: vec!["number".into()],
+                ..field("DurationMs", &["120", "340"])
+            }],
+        )];
+
+        let insights = analyze(&schemas);
+        assert!(insights.durations.iter().any(|c| c.label == "DurationMs"));
+    }
+
+    /// A number is not a duration. Byte counts and retry counts are numbers
+    /// too, which is why this role reads the name first and the type second.
+    #[test]
+    fn a_number_without_a_duration_name_is_not_a_duration() {
+        let schemas = vec![table(
+            "StorageBlobLogs",
+            vec![FieldInfo {
+                kind: "long".into(),
+                types: vec!["number".into()],
+                ..field("ResponseBodySize", &["4096", "8192"])
+            }],
+        )];
+
+        let insights = analyze(&schemas);
+        assert!(insights.durations.is_empty());
+    }
+
+    /// Nor is a duration-shaped *name* enough when the column holds text.
+    #[test]
+    fn a_duration_name_holding_text_is_not_offered() {
+        let schemas = vec![table(
+            "WkfLogs_CL",
+            vec![field("Duration_s", &["fast", "slow"])],
+        )];
+
+        let insights = analyze(&schemas);
+        assert!(insights.durations.is_empty());
+    }
+
+    /// A label repeats and a message does not, so the same detector cannot
+    /// find both. Shape decides it: long values, nearly all distinct.
+    #[test]
+    fn free_text_is_told_apart_from_a_repeated_label() {
+        let schemas = vec![table(
+            "AppTraces",
+            vec![
+                field(
+                    "Message",
+                    &[
+                        "Executing function Pivot-Ignite-Counterparty for run 41",
+                        "Dispatcher picked up 12 pending workflow items",
+                        "Connection to the counterparty endpoint timed out",
+                    ],
+                ),
+                field("SeverityLevel", &["Information", "Warning", "Error"]),
+            ],
+        )];
+
+        let insights = analyze(&schemas);
+        assert!(insights.messages.iter().any(|c| c.label == "Message"));
+        assert!(
+            insights.messages.iter().all(|c| c.label != "SeverityLevel"),
+            "a short repeated value is a label, not a message"
+        );
+        assert!(
+            insights
+                .severities
+                .iter()
+                .any(|c| c.label == "SeverityLevel")
+        );
+    }
+
+    /// Grouping a dependency view on the full URL gives one row per call and
+    /// says nothing. The target repeats; the URL does not.
+    #[test]
+    fn a_call_target_repeats_where_a_url_does_not() {
+        let schemas = vec![table(
+            "AppDependencies",
+            vec![
+                field(
+                    "Target",
+                    &[
+                        "stprodweu.blob.core.windows.net",
+                        "api.counterparty.example",
+                    ],
+                ),
+                field(
+                    "TargetUrl",
+                    &[
+                        "https://api.counterparty.example/v1/quote/8121",
+                        "https://api.counterparty.example/v1/quote/8122",
+                        "https://api.counterparty.example/v1/quote/8123",
+                        "https://api.counterparty.example/v1/quote/8124",
+                        "https://api.counterparty.example/v1/quote/8125",
+                    ],
+                ),
+            ],
+        )];
+
+        let insights = analyze(&schemas);
+        assert!(insights.targets.iter().any(|c| c.label == "Target"));
+        assert!(
+            insights.targets.iter().all(|c| c.label != "TargetUrl"),
+            "a value that never repeats is not something to group on"
+        );
+    }
+
+    /// A column with a handful of values is just as likely to be a region or
+    /// a tier, so the name has to say severity as well.
+    #[test]
+    fn a_short_repeated_column_is_not_a_severity_without_the_name() {
+        let schemas = vec![table(
+            "AppRequests",
+            vec![field("Region", &["westeurope", "northeurope"])],
+        )];
+
+        let insights = analyze(&schemas);
+        assert!(insights.severities.is_empty());
+    }
+
+    /// Log Analytics suffixes custom-log columns by type, so `_s` means the
+    /// value is stored as a string. Reading it as "seconds" would be wrong
+    /// by three orders of magnitude on every `_CL` table in the workspace.
+    #[test]
+    fn the_custom_log_type_suffix_is_not_mistaken_for_a_unit() {
+        assert_eq!(unit_of("duration_s"), "milliseconds");
+        assert_eq!(unit_of("durationms"), "milliseconds");
+        assert_eq!(unit_of("elapsedseconds"), "seconds");
+        assert_eq!(unit_of("latencymicros"), "microseconds");
     }
 }

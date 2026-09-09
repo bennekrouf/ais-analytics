@@ -83,6 +83,15 @@ impl FieldInfo {
     pub fn is_declared_time(&self) -> bool {
         self.kind == "datetime"
     }
+
+    /// Whether this column holds a number, declared or observed.
+    ///
+    /// Paths inside a dynamic column have no declared type, so for those the
+    /// sampled values are the only evidence there is.
+    pub fn is_number(&self) -> bool {
+        matches!(self.kind.as_str(), "real" | "long" | "int")
+            || (self.kind.is_empty() && self.types.iter().any(|t| t == "number"))
+    }
 }
 
 /// A workspace scan, and what it could not look at.

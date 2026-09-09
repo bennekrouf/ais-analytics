@@ -1,18 +1,25 @@
 use crate::screens::exceptions_view::ExceptionsView;
+use crate::screens::logs_view::LogsView;
+use crate::screens::signals_view::SignalsView;
 use crate::screens::trace_view::TraceView;
 use crate::services::loganalytics::{Client, TimeRange};
-use crate::services::{az, az::Workspace, cache, discover, exceptions, history, schema, trace};
+use crate::services::{
+    az, az::Workspace, cache, discover, exceptions, history, logs, schema, signals, trace,
+};
 use dioxus::prelude::*;
 use std::collections::BTreeSet;
 
-/// Top-level sections. Setup answers "what are we tracing and where could it
-/// be"; Trace answers "where did this one value actually go"; Issues answers
-/// "what is failing repeatedly right now" — the question you have before you
-/// have a correlation id to paste.
+/// Top-level sections, ordered by the question they answer. Signals and
+/// Issues are the ones you reach for *before* you have a correlation id —
+/// they exist to hand you one. Trace is what you do with it. Setup is where
+/// the app tells you what it worked out and lets you disagree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tab {
     Setup,
     Trace,
+    Signals,
+    Logs,
+    Deps,
     Issues,
 }
 
@@ -38,7 +45,10 @@ pub fn Home(props: HomeProps) -> Element {
     let workspace_id = workspace.customer_id.clone();
     let mut is_light = props.is_light;
     // Tracing is the job; setup is the thing you do once. Land on the work.
-    let mut tab = use_signal(|| Tab::Trace);
+    // The reading order is "something is wrong" → "what exactly" → "what
+    // happened to this one run". Landing on Trace put an empty search box in
+    // front of a user who does not yet have anything to paste into it.
+    let mut tab = use_signal(|| Tab::Signals);
     let mut state = use_signal(|| LoadState::Idle);
     let mut schemas = use_signal(Vec::<schema::TableSchema>::new);
     // Every Log Analytics query is bounded by a window — there is no
@@ -72,6 +82,19 @@ pub fn Home(props: HomeProps) -> Element {
     // Issues tab. It reads a different window from the rest of the app on
     // purpose: spotting a listener that retries every ninety seconds needs a
     // tight window, while a trace lookup usually wants a wide one.
+    let mut sigs = use_signal(signals::Signals::default);
+    let mut sigs_state = use_signal(|| LoadState::Idle);
+    let mut sigs_spec = use_signal(signals::Spec::default);
+
+    let mut deps = use_signal(signals::Signals::default);
+    let mut deps_state = use_signal(|| LoadState::Idle);
+    let mut deps_spec = use_signal(signals::Spec::default);
+
+    let mut lines = use_signal(Vec::<logs::Entry>::new);
+    let mut lines_state = use_signal(|| LoadState::Idle);
+    let mut lines_spec = use_signal(logs::Spec::default);
+    let mut lines_filter = use_signal(logs::Filter::default);
+
     let mut issues_range = use_signal(|| TimeRange::Last2Hours);
     let mut issues = use_signal(Vec::<exceptions::Group>::new);
     let mut issues_state = use_signal(|| LoadState::Idle);
@@ -92,6 +115,10 @@ pub fn Home(props: HomeProps) -> Element {
     });
 
     let insights = use_memo(move || discover::analyze(&schemas.read()));
+    // Everything the user picks from is built on the tables that hold data,
+    // never on the declared catalogue. `TableList` below is the deliberate
+    // exception: it reports the ratio between the two.
+    let live = use_memo(move || discover::live(&schemas.read()));
 
     // `background` means we already have cached schemas on screen: refresh
     // without blanking them, and keep them if the refresh fails.
@@ -100,6 +127,13 @@ pub fn Home(props: HomeProps) -> Element {
         move |background: bool| {
             let id = id.clone();
             let range = *range.peek();
+            // Every tab below is derived from this scan, and the window
+            // decides which tables even have data. Leaving their results up
+            // would show numbers from a range the user just left.
+            sigs_state.set(LoadState::Idle);
+            deps_state.set(LoadState::Idle);
+            lines_state.set(LoadState::Idle);
+            issues_state.set(LoadState::Idle);
             if !background {
                 state.set(LoadState::Loading);
                 schemas.set(Vec::new());
@@ -268,6 +302,160 @@ pub fn Home(props: HomeProps) -> Element {
     // apps failed to resolve. The second answer is the cause of a good share
     // of the first, but it is a control-plane call and must never hold up the
     // list of exceptions.
+    let load_signals = {
+        let id = workspace_id.clone();
+        move |_: ()| {
+            let id = id.clone();
+            let range = *range.peek();
+            // No key means no way out of a row, and a row you cannot follow
+            // is not worth drawing. Setup is where that gets fixed.
+            let Some(key) = insights
+                .peek()
+                .keys
+                .iter()
+                .find(|c| c.id == *key_id.peek())
+                .cloned()
+            else {
+                sigs_spec.set(signals::Spec::default());
+                sigs_state.set(LoadState::Done);
+                return;
+            };
+            let spec = signals::propose(
+                &schemas.peek(),
+                &insights.peek(),
+                &key,
+                &time_id.peek(),
+                &label_id.peek(),
+                &rules.peek(),
+            );
+            sigs_spec.set(spec.clone());
+            if !spec.is_usable() {
+                sigs_state.set(LoadState::Done);
+                return;
+            }
+            sigs_state.set(LoadState::Loading);
+            spawn(async move {
+                let client = match Client::connect() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        sigs_state.set(LoadState::Failed(e));
+                        return;
+                    }
+                };
+                match signals::load(&client, &id, range, &spec).await {
+                    Ok(found) => {
+                        sigs.set(found);
+                        sigs_state.set(LoadState::Done);
+                    }
+                    Err(e) => sigs_state.set(LoadState::Failed(e)),
+                }
+            });
+        }
+    };
+
+    let load_deps = {
+        let id = workspace_id.clone();
+        move |_: ()| {
+            let id = id.clone();
+            let range = *range.peek();
+            let Some(key) = insights
+                .peek()
+                .keys
+                .iter()
+                .find(|c| c.id == *key_id.peek())
+                .cloned()
+            else {
+                deps_spec.set(signals::Spec::default());
+                deps_state.set(LoadState::Done);
+                return;
+            };
+            let spec = signals::propose_dependencies(
+                &schemas.peek(),
+                &insights.peek(),
+                &key,
+                &time_id.peek(),
+                &rules.peek(),
+            );
+            deps_spec.set(spec.clone());
+            if !spec.is_usable() {
+                deps_state.set(LoadState::Done);
+                return;
+            }
+            deps_state.set(LoadState::Loading);
+            spawn(async move {
+                let client = match Client::connect() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        deps_state.set(LoadState::Failed(e));
+                        return;
+                    }
+                };
+                match signals::load(&client, &id, range, &spec).await {
+                    Ok(found) => {
+                        deps.set(found);
+                        deps_state.set(LoadState::Done);
+                    }
+                    Err(e) => deps_state.set(LoadState::Failed(e)),
+                }
+            });
+        }
+    };
+
+    let load_logs = {
+        let id = workspace_id.clone();
+        move |filter: logs::Filter| {
+            let id = id.clone();
+            let range = *range.peek();
+            let Some(key) = insights
+                .peek()
+                .keys
+                .iter()
+                .find(|c| c.id == *key_id.peek())
+                .cloned()
+            else {
+                lines_spec.set(logs::Spec::default());
+                lines_state.set(LoadState::Done);
+                return;
+            };
+            let spec = logs::propose(&schemas.peek(), &insights.peek(), &key, &time_id.peek());
+            lines_spec.set(spec.clone());
+            lines_filter.set(filter.clone());
+            if !spec.is_usable() {
+                lines_state.set(LoadState::Done);
+                return;
+            }
+            lines_state.set(LoadState::Loading);
+            spawn(async move {
+                let client = match Client::connect() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        lines_state.set(LoadState::Failed(e));
+                        return;
+                    }
+                };
+                match logs::load(&client, &id, range, &spec, &filter).await {
+                    Ok(found) => {
+                        lines.set(found);
+                        lines_state.set(LoadState::Done);
+                    }
+                    Err(e) => lines_state.set(LoadState::Failed(e)),
+                }
+            });
+        }
+    };
+
+    // The tab you land on cannot wait for the click that opens it.
+    use_effect({
+        let mut load_signals = load_signals.clone();
+        move || {
+            let ready = matches!(&*state.read(), LoadState::Done) && !key_id.read().is_empty();
+            if ready && *tab.peek() == Tab::Signals && matches!(*sigs_state.peek(), LoadState::Idle)
+            {
+                load_signals(());
+            }
+        }
+    });
+
     let load_issues = {
         let id = workspace_id.clone();
         let subscription = workspace.subscription_id.clone();
@@ -319,6 +507,9 @@ pub fn Home(props: HomeProps) -> Element {
 
     let on_setup = *tab.read() == Tab::Setup;
     let on_issues = *tab.read() == Tab::Issues;
+    let on_signals = *tab.read() == Tab::Signals;
+    let on_logs = *tab.read() == Tab::Logs;
+    let on_deps = *tab.read() == Tab::Deps;
 
     // The lane axis is a view of the rows already fetched, so changing it
     // re-renders rather than re-queries — and takes effect immediately on the
@@ -380,6 +571,49 @@ pub fn Home(props: HomeProps) -> Element {
                         title: "Trace — follow one key value across the tables",
                         onclick: move |_| tab.set(Tab::Trace),
                         "🔎"
+                    }
+                    button {
+                        class: if on_signals { "topbar-tab active" } else { "topbar-tab" },
+                        title: "Signals — rate, failures and latency over the window",
+                        onclick: {
+                            let mut load_signals = load_signals.clone();
+                            move |_| {
+                                tab.set(Tab::Signals);
+                                // First visit only; refreshing is explicit.
+                                if matches!(*sigs_state.peek(), LoadState::Idle) {
+                                    load_signals(());
+                                }
+                            }
+                        },
+                        "📈"
+                    }
+                    button {
+                        class: if on_logs { "topbar-tab active" } else { "topbar-tab" },
+                        title: "Logs — the stream, filtered, with every line traceable",
+                        onclick: {
+                            let mut load_logs = load_logs.clone();
+                            move |_| {
+                                tab.set(Tab::Logs);
+                                if matches!(*lines_state.peek(), LoadState::Idle) {
+                                    load_logs(logs::Filter::default());
+                                }
+                            }
+                        },
+                        "📜"
+                    }
+                    button {
+                        class: if on_deps { "topbar-tab active" } else { "topbar-tab" },
+                        title: "Dependencies — what this calls out to, and what it costs",
+                        onclick: {
+                            let mut load_deps = load_deps.clone();
+                            move |_| {
+                                tab.set(Tab::Deps);
+                                if matches!(*deps_state.peek(), LoadState::Idle) {
+                                    load_deps(());
+                                }
+                            }
+                        },
+                        "🔗"
                     }
                     button {
                         class: if on_issues { "topbar-tab active" } else { "topbar-tab" },
@@ -539,7 +773,101 @@ pub fn Home(props: HomeProps) -> Element {
                         .cloned();
                     rsx! {
                         div {
-                            if on_issues {
+                            if on_signals {
+                                div { class: "issues-bar",
+                                    div { class: "spacer" }
+                                    button {
+                                        class: "btn",
+                                        disabled: matches!(*sigs_state.read(), LoadState::Loading),
+                                        onclick: {
+                                            let mut load_signals = load_signals.clone();
+                                            move |_| load_signals(())
+                                        },
+                                        "↻ Refresh"
+                                    }
+                                }
+                                SignalsView {
+                                    signals: sigs.read().clone(),
+                                    loading: matches!(*sigs_state.read(), LoadState::Loading),
+                                    error: match &*sigs_state.read() {
+                                        LoadState::Failed(e) => Some(e.clone()),
+                                        _ => None,
+                                    },
+                                    table: sigs_spec.read().table.clone(),
+                                    title: "Rate, errors, duration".to_string(),
+                                    group_title: "Operations".to_string(),
+                                    empty_hint: "No table here carries both the correlation key and rows to count. Pick a different key in Setup.".to_string(),
+                                    knows_failure: sigs_spec.read().knows_failure(),
+                                    has_duration: !sigs_spec.read().duration_field.is_empty(),
+                                    // Same pivot the exceptions view uses: a
+                                    // number is only useful if it leads to
+                                    // the run behind it.
+                                    on_trace: {
+                                        let id = workspace_id.clone();
+                                        move |value: String| {
+                                            tab.set(Tab::Trace);
+                                            follow.run(&id, value, *range.peek());
+                                        }
+                                    },
+                                }
+                            } else if on_deps {
+                                div { class: "issues-bar",
+                                    div { class: "spacer" }
+                                    button {
+                                        class: "btn",
+                                        disabled: matches!(*deps_state.read(), LoadState::Loading),
+                                        onclick: {
+                                            let mut load_deps = load_deps.clone();
+                                            move |_| load_deps(())
+                                        },
+                                        "↻ Refresh"
+                                    }
+                                }
+                                SignalsView {
+                                    signals: deps.read().clone(),
+                                    loading: matches!(*deps_state.read(), LoadState::Loading),
+                                    error: match &*deps_state.read() {
+                                        LoadState::Failed(e) => Some(e.clone()),
+                                        _ => None,
+                                    },
+                                    table: deps_spec.read().table.clone(),
+                                    title: "Outbound calls".to_string(),
+                                    group_title: "Targets".to_string(),
+                                    empty_hint: "Nothing here records what a call went out to — no column reads as a dependency target. This tab needs one alongside the correlation key.".to_string(),
+                                    knows_failure: deps_spec.read().knows_failure(),
+                                    has_duration: !deps_spec.read().duration_field.is_empty(),
+                                    on_trace: {
+                                        let id = workspace_id.clone();
+                                        move |value: String| {
+                                            tab.set(Tab::Trace);
+                                            follow.run(&id, value, *range.peek());
+                                        }
+                                    },
+                                }
+                            } else if on_logs {
+                                LogsView {
+                                    entries: lines.read().clone(),
+                                    loading: matches!(*lines_state.read(), LoadState::Loading),
+                                    error: match &*lines_state.read() {
+                                        LoadState::Failed(e) => Some(e.clone()),
+                                        _ => None,
+                                    },
+                                    table: lines_spec.read().table.clone(),
+                                    severities: logs::severities(&schemas.read(), &lines_spec.read()),
+                                    filter: lines_filter.read().clone(),
+                                    on_filter: {
+                                        let mut load_logs = load_logs.clone();
+                                        move |f: logs::Filter| load_logs(f)
+                                    },
+                                    on_trace: {
+                                        let id = workspace_id.clone();
+                                        move |value: String| {
+                                            tab.set(Tab::Trace);
+                                            follow.run(&id, value, *range.peek());
+                                        }
+                                    },
+                                }
+                            } else if on_issues {
                                 div { class: "issues-bar",
                                     label { class: "rows-pick",
                                         "window:"
@@ -585,7 +913,7 @@ pub fn Home(props: HomeProps) -> Element {
                                         _ => None,
                                     },
                                     has_table: exceptions::has_table_named(
-                                        &schemas.read().iter().map(|t| t.table.clone()).collect::<Vec<_>>()
+                                        &live.read().iter().map(|t| t.table.clone()).collect::<Vec<_>>()
                                     ),
                                     unresolved: unresolved.read().clone(),
                                     checking_config: *checking_config.read(),
@@ -630,8 +958,8 @@ pub fn Home(props: HomeProps) -> Element {
                                 }
 
                                 ErrorRules {
-                                    fields: discover::scalar_fields(&schemas.read()),
-                                    schemas: schemas.read().clone(),
+                                    fields: discover::scalar_fields(&live.read()),
+                                    schemas: live.read().clone(),
                                     rules: rules.read().clone(),
                                     on_change: {
                                         let id = workspace_id.clone();
