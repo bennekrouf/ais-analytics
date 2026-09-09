@@ -590,6 +590,39 @@ jobs:
           cp release/latest.json artifacts/
           cat release/latest.json
 
+      # ── Release notes feed ─────────────────────────────────────────────────
+      # CHANGELOG.md is the only place a release note is written. This turns it
+      # into the feed the website renders at /apps/ais-analytics/releases, and
+      # ships it beside the builds rather than on the source host — the same
+      # reason latest.json moved off GitHub: an installed copy, and the public
+      # download page, must not depend on this repository staying readable.
+      #
+      # --version/--date stamp a section still headed `[Unreleased]`, so cutting
+      # a release is never blocked on having edited the heading first.
+      - name: Generate releases.json from CHANGELOG.md
+        env:
+          TAG: ${{ needs.prepare.outputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # latest/ is synced with --delete, so whatever is in release/ IS the
+          # published feed. A generation failure must therefore still leave a
+          # file behind: without one, this release would silently erase the
+          # site's entire release history. Fall back to the copy already
+          # published, and only then to an empty feed — which the site rejects
+          # in favour of its own snapshot rather than rendering a blank page.
+          if ! python3 scripts/changelog_to_json.py \
+                 --json \
+                 --version "${TAG#v}" \
+                 --date "$(date -u +%Y-%m-%d)" \
+                 > release/releases.json; then
+            echo "::warning::Could not build releases.json from CHANGELOG.md — keeping the published feed."
+            curl -fsS "https://mayorana.ch/downloads/ais-analytics/latest/releases.json" \
+                 -o release/releases.json \
+              || echo '{"name":"ais-analytics","releases":[]}' > release/releases.json
+          fi
+          python3 -c "import json; d=json.load(open('release/releases.json')); print(len(d['releases']), 'releases, newest', d['releases'][0]['version'] if d['releases'] else 'none')"
+
       # Notes list only the platforms actually present, so nobody is sent to a
       # download link that 404s.
       - name: Compose release notes
@@ -598,7 +631,24 @@ jobs:
           TAG:  ${{ needs.prepare.outputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
+
+          # What shipped, from CHANGELOG.md. A release cut without an entry is
+          # not an error — the body just leads with the download sections.
+          CHANGES=$(python3 scripts/changelog_to_json.py \
+            --notes \
+            --version "${TAG#v}" \
+            --date "$(date -u +%Y-%m-%d)" || true)
+
           {
+            if [ -n "$CHANGES" ]; then
+              echo "## What's new in $TAG"
+              echo
+              echo "$CHANGES"
+              echo
+            fi
+            echo "Every version, with its notes: **[mayorana.ch/en/apps/ais-analytics/releases](https://mayorana.ch/en/apps/ais-analytics/releases)**"
+            echo
+
             echo "## Desktop app"
             echo
 
@@ -728,4 +778,5 @@ jobs:
             --latest \
             --title "ais-analytics $TAG" \
             --notes-file notes.md \
-            release/latest.json
+            release/latest.json \
+            release/releases.json

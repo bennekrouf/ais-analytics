@@ -6,5 +6,7 @@ pub mod env;
 pub mod exceptions;
 pub mod history;
 pub mod loganalytics;
+pub mod logs;
 pub mod schema;
+pub mod signals;
 pub mod trace;
