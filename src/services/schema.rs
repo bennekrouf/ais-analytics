@@ -149,19 +149,54 @@ impl TableSchema {
     /// case-sensitively: `['operationname']` fails against `OperationName`.
     /// Anything pasted into a query has to go through here first.
     ///
-    /// A field only ever seen as null and not declared is skipped. Scans
-    /// cached before nulls were dropped still carry the union's borrowed
-    /// columns, and those do not exist in this table.
+    /// Only a column this table owns resolves — see [`Self::without_borrowed`].
     pub fn column(&self, name: &str) -> Option<&str> {
         if name.is_empty() {
             return None;
         }
+        let declared = self.declared();
         self.fields
             .iter()
-            .filter(|f| !f.kind.is_empty() || f.types.iter().any(|t| t != "null"))
+            .filter(|f| owned(f, &declared))
             .find(|f| f.name.eq_ignore_ascii_case(name))
             .map(|f| f.name.as_str())
     }
+
+    /// Drops the columns this table only appeared to have.
+    ///
+    /// The scan samples tables in a `union`, and a union row carries every
+    /// column of every table in the batch — as null, or as `""` for strings,
+    /// which cannot be null in KQL. `pack_all()` keeps both, so each table
+    /// came out holding its neighbours' columns: `AzureMetrics` looked like
+    /// it had `OperationId`, and a query naming it was rejected.
+    ///
+    /// The metadata is what settles it. A top-level column the workspace does
+    /// not declare for this table is not in this table, whatever the sample
+    /// says; a path inside a dynamic column is kept when its root is declared.
+    /// A table with nothing declared at all (a scan cached before types were
+    /// recorded) is left alone rather than emptied.
+    pub fn without_borrowed(mut self) -> TableSchema {
+        let declared: BTreeSet<String> = self.declared().into_iter().map(str::to_string).collect();
+        self.fields.retain(|f| owned(f, &declared));
+        self
+    }
+
+    /// Declared top-level column names. Empty when the table has no metadata.
+    fn declared(&self) -> BTreeSet<&str> {
+        self.fields
+            .iter()
+            .filter(|f| !f.kind.is_empty())
+            .map(|f| f.name.as_str())
+            .collect()
+    }
+}
+
+fn owned<S: std::borrow::Borrow<str> + Ord>(field: &FieldInfo, declared: &BTreeSet<S>) -> bool {
+    if declared.is_empty() {
+        return true;
+    }
+    let root = field.name.split('.').next().unwrap_or_default();
+    declared.contains(root)
 }
 
 /// [`TableSchema::column`], looked up by table name.
@@ -301,10 +336,8 @@ fn summarise(
             if path == SOURCE_COLUMN {
                 continue;
             }
-            // A union carries every column of every table in the batch, and
-            // `pack_all()` keeps them as nulls. Recording those would give
-            // each table the columns of its neighbours, and a query naming
-            // one fails outright.
+            // A null says nothing about the column, and in a union it is
+            // usually a neighbouring table's (see `without_borrowed`).
             if value.is_null() {
                 continue;
             }
@@ -365,6 +398,7 @@ fn summarise(
         unread: false,
         fields,
     }
+    .without_borrowed()
 }
 
 /// The JSON shape a declared KQL type arrives as, for columns the sample
@@ -567,21 +601,35 @@ mod tests {
     }
 
     /// A batch unions tables, so each sampled row carries every other
-    /// table's columns as nulls. Those must not become this table's columns.
+    /// table's columns — null, or `""` for strings. Seen on a real
+    /// workspace: `AzureMetrics` came out with `OperationId`, `Level` and
+    /// `Host`, all undeclared and all empty, and every query naming them
+    /// was rejected.
     #[test]
     fn columns_borrowed_from_the_union_are_not_this_tables() {
-        let sample = vec![json!({"OperationId": "a", "Message": "hi", "Level": null})];
+        let sample = vec![json!({
+            "Resource": "func-app",
+            "OperationId": "",
+            "Level": "",
+            "Host": null,
+            "Properties": {"region": "westeurope"}
+        })];
         let schema = summarise(
-            "AppTraces",
+            "AzureMetrics",
             1,
             &sample,
             Some(&meta(
-                "AppTraces",
-                &[("OperationId", "string"), ("Message", "string")],
+                "AzureMetrics",
+                &[("Resource", "string"), ("Properties", "dynamic")],
             )),
         );
-        assert!(schema.fields.iter().all(|f| f.name != "Level"));
-        assert_eq!(schema.column("level"), None);
+        let names: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
+        for borrowed in ["OperationId", "Level", "Host"] {
+            assert!(!names.contains(&borrowed), "got {names:?}");
+        }
+        // Paths inside a declared dynamic column are the table's own.
+        assert!(names.contains(&"Properties.region"), "got {names:?}");
+        assert_eq!(schema.column("operationid"), None);
     }
 
     /// Roles arrive lowercased; queries need the table's own spelling.
@@ -595,19 +643,44 @@ mod tests {
         );
         assert_eq!(schema.column("operationname"), Some("OperationName"));
         assert_eq!(schema.column(""), None);
+    }
 
-        // A scan cached before nulls were dropped still holds borrowed
-        // columns; they must not resolve either.
-        let mut cached = schema.clone();
-        cached.fields.push(FieldInfo {
-            name: "Level".into(),
+    /// Scans saved by earlier versions still carry borrowed columns; they
+    /// must be dropped on the way in rather than queried until a rescan.
+    #[test]
+    fn a_cached_scan_loses_its_borrowed_columns() {
+        let undeclared = |name: &str| FieldInfo {
+            name: name.into(),
             kind: String::new(),
-            types: vec!["null".into()],
-            seen_in: 1,
-            distinct: 0,
-            values: BTreeSet::new(),
-        });
-        assert_eq!(cached.column("Level"), None);
+            types: vec!["string".into()],
+            seen_in: 20,
+            distinct: 1,
+            values: [String::new()].into(),
+        };
+        let cached = TableSchema {
+            table: "AzureMetrics".into(),
+            sampled_rows: 20,
+            rows_in_range: 370_281,
+            unread: false,
+            fields: vec![
+                FieldInfo {
+                    kind: "string".into(),
+                    ..undeclared("Resource")
+                },
+                undeclared("OperationId"),
+            ],
+        };
+        assert_eq!(cached.column("OperationId"), None);
+        let clean = cached.without_borrowed();
+        assert_eq!(clean.fields.len(), 1);
+        assert_eq!(clean.fields[0].name, "Resource");
+
+        // Nothing declared at all: no basis to judge, so nothing is dropped.
+        let untyped = TableSchema {
+            fields: vec![undeclared("OperationId")],
+            ..clean
+        };
+        assert_eq!(untyped.without_borrowed().fields.len(), 1);
     }
 
     #[test]
