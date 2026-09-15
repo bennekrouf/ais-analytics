@@ -142,6 +142,35 @@ impl TableSchema {
     pub fn path(&self) -> String {
         self.table.clone()
     }
+
+    /// The column matching `name`, as this table spells it.
+    ///
+    /// Roles are chosen by lowercased id, but KQL resolves column names
+    /// case-sensitively: `['operationname']` fails against `OperationName`.
+    /// Anything pasted into a query has to go through here first.
+    ///
+    /// A field only ever seen as null and not declared is skipped. Scans
+    /// cached before nulls were dropped still carry the union's borrowed
+    /// columns, and those do not exist in this table.
+    pub fn column(&self, name: &str) -> Option<&str> {
+        if name.is_empty() {
+            return None;
+        }
+        self.fields
+            .iter()
+            .filter(|f| !f.kind.is_empty() || f.types.iter().any(|t| t != "null"))
+            .find(|f| f.name.eq_ignore_ascii_case(name))
+            .map(|f| f.name.as_str())
+    }
+}
+
+/// [`TableSchema::column`], looked up by table name.
+pub fn column_in(schemas: &[TableSchema], table: &str, name: &str) -> Option<String> {
+    schemas
+        .iter()
+        .find(|s| s.table == table)
+        .and_then(|s| s.column(name))
+        .map(str::to_string)
 }
 
 /// Lists the tables, then samples the ones with data in range.
@@ -270,6 +299,13 @@ fn summarise(
             // `union withsource=` injects this; it is the same for every row
             // of a table and would rank as a perfectly-filled constant.
             if path == SOURCE_COLUMN {
+                continue;
+            }
+            // A union carries every column of every table in the batch, and
+            // `pack_all()` keeps them as nulls. Recording those would give
+            // each table the columns of its neighbours, and a query naming
+            // one fails outright.
+            if value.is_null() {
                 continue;
             }
             let entry = observed.entry(path.clone()).or_insert_with(|| FieldInfo {
@@ -528,6 +564,50 @@ mod tests {
         };
         assert!(partial.partial());
         assert!(!Scan::default().partial(), "an empty workspace is complete");
+    }
+
+    /// A batch unions tables, so each sampled row carries every other
+    /// table's columns as nulls. Those must not become this table's columns.
+    #[test]
+    fn columns_borrowed_from_the_union_are_not_this_tables() {
+        let sample = vec![json!({"OperationId": "a", "Message": "hi", "Level": null})];
+        let schema = summarise(
+            "AppTraces",
+            1,
+            &sample,
+            Some(&meta(
+                "AppTraces",
+                &[("OperationId", "string"), ("Message", "string")],
+            )),
+        );
+        assert!(schema.fields.iter().all(|f| f.name != "Level"));
+        assert_eq!(schema.column("level"), None);
+    }
+
+    /// Roles arrive lowercased; queries need the table's own spelling.
+    #[test]
+    fn a_column_resolves_to_the_tables_spelling() {
+        let schema = summarise(
+            "AppRequests",
+            0,
+            &[],
+            Some(&meta("AppRequests", &[("OperationName", "string")])),
+        );
+        assert_eq!(schema.column("operationname"), Some("OperationName"));
+        assert_eq!(schema.column(""), None);
+
+        // A scan cached before nulls were dropped still holds borrowed
+        // columns; they must not resolve either.
+        let mut cached = schema.clone();
+        cached.fields.push(FieldInfo {
+            name: "Level".into(),
+            kind: String::new(),
+            types: vec!["null".into()],
+            seen_in: 1,
+            distinct: 0,
+            values: BTreeSet::new(),
+        });
+        assert_eq!(cached.column("Level"), None);
     }
 
     #[test]

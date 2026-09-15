@@ -13,7 +13,7 @@
 
 use crate::services::discover::{Insights, KeyCandidate};
 use crate::services::loganalytics::{Client, TimeRange, column_ref, kql_string, table_ref};
-use crate::services::schema::TableSchema;
+use crate::services::schema::{TableSchema, column_in};
 use serde_json::Value;
 
 /// Lines pulled back before the view stops being readable. A log tab that
@@ -84,25 +84,23 @@ pub fn propose(
         return Spec::default();
     };
 
-    let has = |name: &str| has_column(schemas, table, name);
+    // Every name below is pasted into KQL, so each one is the table's own
+    // spelling rather than the role's lowercased id.
+    let column = |name: &str| column_in(schemas, table, name);
 
     Spec {
         table: table.to_string(),
-        time_field: if has(time_id) {
-            time_id.to_string()
-        } else {
-            crate::services::discover::INGESTION_TIME.to_string()
-        },
-        message_field: message.map(|m| m.label.clone()).unwrap_or_default(),
+        time_field: column(time_id)
+            .unwrap_or_else(|| crate::services::discover::INGESTION_TIME.to_string()),
+        message_field: message.and_then(|m| column(&m.id)).unwrap_or_default(),
         severity_field: insights
             .severities
             .iter()
-            .find(|s| has(&s.label))
-            .map(|s| s.label.clone())
+            .find_map(|s| column(&s.id))
             .unwrap_or_default(),
         key_field: key
             .binding_for(table)
-            .map(|b| b.field.clone())
+            .and_then(|b| column(&b.field))
             .unwrap_or_default(),
     }
 }
@@ -189,13 +187,6 @@ fn rows_of(schemas: &[TableSchema], name: &str) -> usize {
         .find(|s| s.table == name)
         .map(|s| s.rows_in_range)
         .unwrap_or_default()
-}
-
-fn has_column(schemas: &[TableSchema], table: &str, name: &str) -> bool {
-    !name.is_empty()
-        && schemas
-            .iter()
-            .any(|s| s.table == table && s.fields.iter().any(|f| f.name.eq_ignore_ascii_case(name)))
 }
 
 fn text_of(row: &Value, field: &str) -> String {
@@ -318,6 +309,111 @@ mod tests {
             },
         );
         assert!(kql.contains(r#""x\" | take 1 //""#), "got: {kql}");
+    }
+
+    mod proposing {
+        use super::*;
+        use crate::services::discover;
+        use crate::services::schema::FieldInfo;
+        use std::collections::BTreeSet;
+
+        fn text_field(name: &str, values: &[&str]) -> FieldInfo {
+            let set: BTreeSet<String> = values.iter().map(|v| v.to_string()).collect();
+            FieldInfo {
+                name: name.into(),
+                kind: "string".into(),
+                types: vec!["string".into()],
+                seen_in: values.len(),
+                distinct: set.len(),
+                values: set,
+            }
+        }
+
+        fn table(name: &str, rows: usize, fields: Vec<FieldInfo>) -> TableSchema {
+            TableSchema {
+                table: name.into(),
+                sampled_rows: 20,
+                rows_in_range: rows,
+                unread: false,
+                fields,
+            }
+        }
+
+        fn ids() -> Vec<&'static str> {
+            vec![
+                "2430dcbe991462aa4a1f0b2c3d4e5f60",
+                "859356a0819103bb5b2f1c3d4e5f6071",
+                "b28b3eb5e214b9cc6c3f2d4e5f607182",
+            ]
+        }
+
+        /// The severity was picked in one table and queried in another.
+        /// `Level` lives in `FunctionAppLogs`; `AppTraces` only appeared to
+        /// have it because the scan's union handed it over as nulls, and
+        /// `project ['Level']` was rejected.
+        #[test]
+        fn a_severity_the_table_only_borrowed_is_not_queried() {
+            let messages = &[
+                "Connection to the upstream timed out",
+                "Retrying the request now",
+            ];
+            let schemas = vec![
+                table(
+                    "AppTraces",
+                    9000,
+                    vec![
+                        text_field("OperationId", &ids()),
+                        text_field("Message", messages),
+                        FieldInfo {
+                            name: "Level".into(),
+                            kind: String::new(),
+                            types: vec!["null".into()],
+                            seen_in: 20,
+                            distinct: 0,
+                            values: BTreeSet::new(),
+                        },
+                    ],
+                ),
+                table(
+                    "FunctionAppLogs",
+                    100,
+                    vec![text_field("Level", &["Information", "Error"])],
+                ),
+            ];
+            let insights = discover::analyze(&schemas);
+            let key = insights.keys.first().expect("a key was found");
+            let spec = propose(&schemas, &insights, key, "timegenerated");
+
+            assert_eq!(spec.table, "AppTraces");
+            assert_eq!(spec.severity_field, "");
+            assert_eq!(spec.message_field, "Message");
+            assert_eq!(spec.key_field, "OperationId");
+            assert!(!query(&spec, &Filter::default()).contains("['Level']"));
+        }
+
+        /// Role ids arrive lowercased; the query needs the table's spelling.
+        #[test]
+        fn lowercased_role_ids_become_the_tables_spelling() {
+            let schemas = vec![table(
+                "AppTraces",
+                9000,
+                vec![
+                    text_field("OperationId", &ids()),
+                    text_field("Message", &["Connection to the upstream timed out"]),
+                    text_field("SeverityLevel", &["Information", "Error"]),
+                    FieldInfo {
+                        kind: "datetime".into(),
+                        ..text_field("TimeGenerated", &[])
+                    },
+                ],
+            )];
+            let insights = discover::analyze(&schemas);
+            let key = insights.keys.first().expect("a key was found");
+            let spec = propose(&schemas, &insights, key, "timegenerated");
+
+            assert_eq!(spec.time_field, "TimeGenerated");
+            assert_eq!(spec.severity_field, "SeverityLevel");
+        }
     }
 
     #[test]

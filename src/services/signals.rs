@@ -14,6 +14,7 @@
 //! that has never heard of Application Insights.
 
 use crate::services::loganalytics::{Client, TimeRange, column_ref, kql_string, table_ref};
+use crate::services::schema::column_in;
 use crate::services::trace::ErrorRule;
 use serde_json::Value;
 
@@ -158,7 +159,7 @@ pub fn propose_dependencies(
 
     let base = spec_for(schemas, insights, key, table, time_id, rules);
     Spec {
-        label_field: target.label.clone(),
+        label_field: column_in(schemas, table, &target.id).unwrap_or_default(),
         ..base
     }
 }
@@ -180,12 +181,9 @@ fn spec_for(
     time_id: &str,
     rules: &[ErrorRule],
 ) -> Spec {
-    let has_column = |name: &str| {
-        !name.is_empty()
-            && schemas.iter().any(|s| {
-                s.table == table && s.fields.iter().any(|f| f.name.eq_ignore_ascii_case(name))
-            })
-    };
+    // Every name below is pasted into KQL, so each one is the table's own
+    // spelling rather than the role's lowercased id.
+    let column = |name: &str| column_in(schemas, table, name);
     let field_named = |hints: &[&str]| -> String {
         schemas
             .iter()
@@ -201,24 +199,31 @@ fn spec_for(
 
     Spec {
         table: table.to_string(),
-        time_field: if has_column(time_id) {
-            time_id.to_string()
-        } else {
-            crate::services::discover::INGESTION_TIME.to_string()
-        },
+        time_field: column(time_id)
+            .unwrap_or_else(|| crate::services::discover::INGESTION_TIME.to_string()),
         duration_field: insights
             .durations
             .iter()
-            .find(|d| has_column(&d.label))
-            .map(|d| d.label.clone())
+            .find_map(|d| column(&d.id))
             .unwrap_or_default(),
         label_field: String::new(),
         key_field: key
             .binding_for(table)
-            .map(|b| b.field.clone())
+            .and_then(|b| column(&b.field))
             .unwrap_or_default(),
         weight_field: field_named(&WEIGHT_HINTS),
-        rules: rules.to_vec(),
+        // Rules store a lowercased path. One this table does not carry is
+        // dropped: naming a missing column fails the whole query, where
+        // leaving it out only leaves that rule uncounted.
+        rules: rules
+            .iter()
+            .filter_map(|rule| {
+                column(&rule.field).map(|field| ErrorRule {
+                    field,
+                    ..rule.clone()
+                })
+            })
+            .collect(),
     }
 }
 
@@ -259,18 +264,8 @@ pub fn propose(
     };
 
     let base = spec_for(schemas, insights, key, table, time_id, rules);
-    let has_label = schemas.iter().any(|s| {
-        s.table == table
-            && s.fields
-                .iter()
-                .any(|f| f.name.eq_ignore_ascii_case(label_id))
-    });
     Spec {
-        label_field: if has_label && !label_id.is_empty() {
-            label_id.to_string()
-        } else {
-            String::new()
-        },
+        label_field: column_in(schemas, table, label_id).unwrap_or_default(),
         ..base
     }
 }
@@ -753,6 +748,56 @@ mod tests {
             let key = insights.keys.first().expect("a key was found");
             let spec = propose(&schemas, &insights, key, "EnqueuedAt", "Name", &[]);
             assert_eq!(spec.time_field, "TimeGenerated");
+        }
+
+        /// Role ids are lowercased, and KQL column names are not:
+        /// `['operationname']` is rejected against `OperationName`. Every
+        /// field in the spec has to carry the table's own spelling.
+        #[test]
+        fn lowercased_role_ids_become_the_tables_spelling() {
+            let mut schemas = fixture().0;
+            schemas[0]
+                .fields
+                .push(text_field("OperationName", &["GET /orders"]));
+            schemas[0].fields.push(FieldInfo {
+                kind: "datetime".into(),
+                ..text_field("TimeGenerated", &[])
+            });
+            schemas[0]
+                .fields
+                .push(text_field("ResultCode", &["200", "500"]));
+            let insights = discover::analyze(&schemas);
+            let key = insights.keys.first().expect("a key was found");
+            let rules = [
+                ErrorRule {
+                    field: "resultcode".into(),
+                    display: "ResultCode".into(),
+                    value: "500".into(),
+                },
+                ErrorRule {
+                    field: "notonthistable".into(),
+                    display: String::new(),
+                    value: "x".into(),
+                },
+            ];
+            let spec = propose(
+                &schemas,
+                &insights,
+                key,
+                "timegenerated",
+                "operationname",
+                &rules,
+            );
+
+            assert_eq!(spec.time_field, "TimeGenerated");
+            assert_eq!(spec.label_field, "OperationName");
+            assert_eq!(
+                spec.rules.len(),
+                1,
+                "a rule the table cannot answer is dropped"
+            );
+            assert_eq!(spec.rules[0].field, "ResultCode");
+            assert!(operations_query(&spec).contains("tostring(['OperationName'])"));
         }
     }
 }
