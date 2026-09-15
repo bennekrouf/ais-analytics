@@ -801,3 +801,57 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod live_cache_probe {
+    #[test]
+    #[ignore]
+    fn probe() {
+        use crate::services::{cache, discover, loganalytics::TimeRange, logs};
+        let dir = dirs::config_dir().unwrap().join("ais-analytics/scans");
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let id = path.file_stem().unwrap().to_str().unwrap().to_string();
+            let Some(scan) = cache::load(&id, TimeRange::LastDay) else {
+                continue;
+            };
+            let insights = discover::analyze(&scan.schemas);
+            let Some(key) = insights.keys.first() else {
+                continue;
+            };
+            let time = insights
+                .times
+                .first()
+                .map(|c| c.id.clone())
+                .unwrap_or_default();
+            let label = insights
+                .labels
+                .first()
+                .map(|c| c.id.clone())
+                .unwrap_or_default();
+            println!("== {id} key={} time={time} label={label}", key.label);
+            println!(
+                "  bound: {:?}",
+                key.bindings
+                    .iter()
+                    .map(|b| format!("{}.{}", b.table, b.field))
+                    .collect::<Vec<_>>()
+            );
+            let s = super::propose(&scan.schemas, &insights, key, &time, &label, &[]);
+            println!(
+                "  signals: {} time={} dur={} label={} key={} weight={}",
+                s.table, s.time_field, s.duration_field, s.label_field, s.key_field, s.weight_field
+            );
+            let d = super::propose_dependencies(&scan.schemas, &insights, key, &time, &[]);
+            println!(
+                "  deps:    {} dur={} label={} key={}",
+                d.table, d.duration_field, d.label_field, d.key_field
+            );
+            let l = logs::propose(&scan.schemas, &insights, key, &time);
+            println!(
+                "  logs:    {} time={} msg={} sev={} key={}",
+                l.table, l.time_field, l.message_field, l.severity_field, l.key_field
+            );
+        }
+    }
+}

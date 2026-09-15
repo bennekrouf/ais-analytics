@@ -49,10 +49,20 @@ fn path(workspace_id: &str) -> PathBuf {
 
 pub fn load(workspace_id: &str, range: TimeRange) -> Option<CachedScan> {
     let text = std::fs::read_to_string(path(workspace_id)).ok()?;
-    let scan: CachedScan = serde_json::from_str(&text).ok()?;
+    let mut scan: CachedScan = serde_json::from_str(&text).ok()?;
     // Opening on a scan taken over a different window would show tables as
     // empty (or absent) for reasons that have nothing to do with the data.
-    (scan.range == range).then_some(scan)
+    if scan.range != range {
+        return None;
+    }
+    // Scans saved by earlier versions still hold columns borrowed from the
+    // union, and every view would keep querying them until the next rescan.
+    scan.schemas = scan
+        .schemas
+        .into_iter()
+        .map(TableSchema::without_borrowed)
+        .collect();
+    Some(scan)
 }
 
 pub fn save(workspace_id: &str, range: TimeRange, schemas: &[TableSchema]) {
