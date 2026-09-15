@@ -771,6 +771,14 @@ fn message_candidates(schemas: &[TableSchema]) -> Vec<RoleCandidate> {
             if is_system(&field.name) || !field.is_scalar() || field.values.is_empty() {
                 continue;
             }
+            // A timestamp or a guid is long and varied too, and being in
+            // every table it would outrank the real message column.
+            if !field.kind.is_empty() && field.kind != "string" {
+                continue;
+            }
+            if field.values.iter().filter(|v| id_shaped(v)).count() * 2 > field.values.len() {
+                continue;
+            }
             let named = MESSAGE_HINTS
                 .iter()
                 .any(|h| field.name.to_lowercase().contains(h));
@@ -868,17 +876,39 @@ fn target_candidates(schemas: &[TableSchema]) -> Vec<RoleCandidate> {
             if field.seen_in > 4 && field.distinct >= field.seen_in {
                 continue;
             }
+            let close = names_a_target(&lower);
             let entry = by_key
                 .entry(lower)
                 .or_insert_with(|| (field.name.clone(), Vec::new(), false));
             entry.1.push(path.clone());
-            entry.2 = true;
+            entry.2 |= close;
         }
     }
 
-    ranked(by_key, |tables, _| {
-        format!("call target, in {tables} table(s)")
-    })
+    let mut out = ranked(by_key, |tables, close| {
+        if close {
+            format!("call target, in {tables} table(s)")
+        } else {
+            format!("mentions a target, in {tables} table(s)")
+        }
+    });
+    // Stable, so reach still orders candidates within each group.
+    out.sort_by_key(|c| !names_a_target(&c.id));
+    out
+}
+
+/// Whether a column's name ends on the target, rather than merely mentioning
+/// one. `Target` and `RemoteHost` name the other end of a call;
+/// `HostInstanceId` only mentions a host, and being in every App Insights
+/// table it would otherwise outrank the real target on reach alone.
+fn names_a_target(lower: &str) -> bool {
+    let leaf = lower.rsplit('.').next().unwrap_or_default();
+    // Custom-log columns carry a type suffix: `remotehost_s`.
+    let leaf = match leaf.len().checked_sub(2).map(|i| leaf.split_at(i)) {
+        Some((stem, "_s" | "_d" | "_g" | "_b" | "_t")) => stem,
+        _ => leaf,
+    };
+    TARGET_HINTS.iter().any(|h| leaf.ends_with(h))
 }
 
 /// Shared tail of the role detectors: score by reach, describe, sort.
@@ -1735,6 +1765,76 @@ mod tests {
             insights.targets.iter().all(|c| c.label != "TargetUrl"),
             "a value that never repeats is not something to group on"
         );
+    }
+
+    /// Seen on a real workspace: `Properties.HostInstanceId` is in every App
+    /// Insights table and `Target` only in one, so on reach alone the
+    /// dependency view grouped `AppMetrics` by host instance.
+    #[test]
+    fn a_column_naming_the_target_outranks_one_that_mentions_a_host() {
+        let host = || field("Properties.HostInstanceId", &["i-1", "i-2"]);
+        let schemas = vec![
+            table("AppMetrics", vec![host()]),
+            table("AppRequests", vec![host()]),
+            table("AppTraces", vec![host()]),
+            table(
+                "AppDependencies",
+                vec![host(), field("Target", &["api.example", "db.example"])],
+            ),
+            table("Calls_CL", vec![field("RemoteHost_s", &["a", "b"])]),
+        ];
+
+        let insights = analyze(&schemas);
+        let order: Vec<&str> = insights.targets.iter().map(|c| c.label.as_str()).collect();
+        let at = |name: &str| order.iter().position(|l| *l == name).unwrap();
+        assert!(
+            at("Target") < at("Properties.HostInstanceId"),
+            "got {order:?}"
+        );
+        assert!(
+            at("RemoteHost_s") < at("Properties.HostInstanceId"),
+            "got {order:?}"
+        );
+    }
+
+    /// A timestamp is long and nearly always distinct, and it is in every
+    /// table — so without its declared type it outranked `Message`.
+    #[test]
+    fn a_declared_timestamp_or_an_id_is_not_a_message() {
+        let stamps = [
+            "2026-09-03T17:45:01.1234567Z",
+            "2026-09-03T17:45:02.2234567Z",
+            "2026-09-03T17:45:03.3234567Z",
+        ];
+        let ids = [
+            "443be5a179bee5dab182941a0a6c17ea",
+            "8b17cf1a9fbfa1f1fd96e5877f5387cc",
+            "a8a1164830e3cc639e8fae9822c7136c",
+        ];
+        let row = || {
+            vec![
+                typed("TimeGenerated", "datetime", &stamps),
+                field("Properties.TraceId", &ids),
+            ]
+        };
+        let mut traces = row();
+        traces.push(typed(
+            "Message",
+            "string",
+            &[
+                "Executing function Pivot for run 41",
+                "Dispatcher picked up 12 items",
+            ],
+        ));
+        let schemas = vec![
+            table("AppRequests", row()),
+            table("AppDependencies", row()),
+            table("AppTraces", traces),
+        ];
+
+        let insights = analyze(&schemas);
+        let labels: Vec<&str> = insights.messages.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, ["Message"]);
     }
 
     /// A column with a handful of values is just as likely to be a region or
