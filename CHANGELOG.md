@@ -15,6 +15,72 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [0.1.31] - 2026-09-15
+
+### Fixed
+
+- Queries no longer fail on columns a table only appeared to have. The
+  workspace scan samples tables together, and each one picked up its
+  neighbours' columns as empty values: `AzureMetrics` looked like it had
+  `OperationId`, `Level` and `Host`, and any query naming them was rejected.
+  A column now counts only when the workspace declares it for that table.
+  Scans saved by earlier versions are cleaned the same way when they load, so
+  no rescan is needed.
+- The Dependencies tab groups calls by their real target. A column that only
+  mentions a host, such as `HostInstanceId`, no longer outranks `Target` or
+  `RemoteHost` just because it appears in every table.
+- A timestamp or id column is no longer mistaken for the message column.
+
+## [0.1.30] - 2026-09-15
+
+### Fixed
+
+- Signals, Logs and Dependencies queries no longer fail on how a column name
+  is capitalised. KQL rejects `operationname` against `OperationName`; every
+  column is now queried with the table's own spelling.
+- The severity filter in Logs no longer queries a table that lacks the
+  severity column, for example `Level` from `FunctionAppLogs` being asked of
+  `AppTraces`.
+- An error rule that refers to a column a table does not have is left out of
+  that table's failure count instead of failing the whole query.
+
+## [0.1.29] - 2026-09-14
+
+### Changed
+
+- Packaging only — no user-visible change.
+
+## [0.1.28] - 2026-09-14
+
+### Added
+
+- A banner at startup for occasional messages from us, such as a request for
+  feedback. It is fetched once from mayorana.ch, stays until you dismiss it and
+  is not shown again after that. If the notice cannot be fetched, no banner
+  appears and startup is not slowed. Setting `DISABLE_UPDATE_CHECK` turns it off
+  along with the update check.
+
+## [0.1.27] - 2026-09-09
+
+### Added
+
+- A Signals tab: request rate, failures and latency over the selected window,
+  with operations ranked by failures. Every row opens its run in Trace.
+  Failures come from your own error rules. With no rules defined, or no
+  duration column in the workspace, the tab says so next to the setting that
+  fixes it instead of guessing.
+- A Logs tab: the log stream filtered by severity and text, with every line
+  leading to the run it belongs to.
+- A Dependencies tab: the same view as Signals, grouped by call target —
+  what the app calls out to, how often it fails and how long it takes.
+
+### Changed
+
+- The app now opens on Signals instead of Trace, so you start from what is
+  going wrong rather than an empty search box.
+- The notes for every release, with its download, are now published at
+  [mayorana.ch/en/apps/ais-analytics/releases](https://mayorana.ch/en/apps/ais-analytics/releases).
+
 ## [0.1.26] - 2026-09-06
 
 ### Added
