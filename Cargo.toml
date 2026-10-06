@@ -24,5 +24,10 @@ tokio = { version = "1.53.1", features = ["full"] }
 # Embed the app icon (assets/icon.ico) into the Windows .exe resource so the
 # taskbar, Start menu, alt-tab, and installer shortcuts all show the logo.
 # Skipped on non-Windows hosts.
+base64 = "0.22"
+# The anonymous install id for usage statistics: 128 random bits. Already
+# in the tree via other crates, so this names a dependency rather than adding one.
+getrandom = "0.3"
+
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

@@ -154,6 +154,10 @@ jobs:
 
       - name: Build
         if: env.HAVE_MAC_SECRETS == 'true'
+        env:
+          # Where anonymous usage statistics go (repository variable, not a
+          # secret). Unset, the build sends nothing and never asks.
+          MAYORANA_TELEMETRY_URL: ${{ vars.MAYORANA_TELEMETRY_URL }}
         run: cargo build --release --target aarch64-apple-darwin
 
       # ── Sign the binary with hardened runtime + webview entitlements ───────
@@ -306,6 +310,10 @@ jobs:
           }
 
       - name: Build
+        env:
+          # Where anonymous usage statistics go (repository variable, not a
+          # secret). Unset, the build sends nothing and never asks.
+          MAYORANA_TELEMETRY_URL: ${{ vars.MAYORANA_TELEMETRY_URL }}
         run: cargo build --release
 
       - name: Copy WebView2Loader.dll
@@ -483,6 +491,10 @@ jobs:
             pkg-config
 
       - name: Build
+        env:
+          # Where anonymous usage statistics go (repository variable, not a
+          # secret). Unset, the build sends nothing and never asks.
+          MAYORANA_TELEMETRY_URL: ${{ vars.MAYORANA_TELEMETRY_URL }}
         run: cargo build --release --target x86_64-unknown-linux-gnu
 
       - name: Package tar.gz
