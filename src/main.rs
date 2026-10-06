@@ -1,6 +1,7 @@
 mod notice;
 mod screens;
 mod services;
+mod telemetry;
 mod update_check;
 
 use dioxus::desktop::LogicalSize;
@@ -211,6 +212,9 @@ fn AppRoot(initial: Option<Workspace>) -> Element {
         move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             if let Some(info) = update_check::check().await {
+                telemetry::record(telemetry::Event::UpdateOffered {
+                    to: info.latest_version.clone(),
+                });
                 update_info.set(Some(info));
             }
         },
@@ -235,6 +239,27 @@ fn AppRoot(initial: Option<Workspace>) -> Element {
 
     let current = workspace.read().clone();
 
+    // ── Anonymous usage statistics ─────────────────────────────────────────
+    // On by default, but only once the person has been told: `start` reads the
+    // opt-outs (including a shell profile's), records the launch, and says
+    // whether the notice is still owed. See telemetry.rs.
+    let mut ask_consent = use_signal(|| false);
+    use_coroutine(
+        move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
+            if telemetry::start().await {
+                ask_consent.set(true);
+            }
+            telemetry::flush_forever().await;
+        },
+    );
+    // Recorded while the notice is on screen, so collection starts from the
+    // next event — never from one the person had no chance to read about.
+    use_effect(move || {
+        if *ask_consent.read() {
+            telemetry::mark_informed();
+        }
+    });
+
     rsx! {
         // Update banner — fixed top, dismissable per session.
         if let (Some(info), false) = (update_info.read().clone(), *update_dismissed.read()) {
@@ -248,12 +273,44 @@ fn AppRoot(initial: Option<Workspace>) -> Element {
                     class: "update-banner-link",
                     href: "{info.release_url}",
                     target: "_blank",
+                    onclick: {
+                        let to = info.latest_version.clone();
+                        move |_| telemetry::record(telemetry::Event::UpdateClicked { to: to.clone() })
+                    },
                     "Download"
                 }
                 button {
                     class: "update-banner-dismiss",
                     onclick: move |_| update_dismissed.set(true),
                     "×"
+                }
+            }
+        }
+
+        // Usage-statistics notice: once, at the bottom so it never sits under the
+        // update or notice banners. Either button is remembered.
+        if *ask_consent.read() {
+            div { class: "consent-banner",
+                span { class: "update-banner-text",
+                    strong { "AIS Analytics shares anonymous usage statistics. " }
+                    "Whether it is installed and opened, and its version and operating system \
+                     — never your files, data, accounts or anything you type."
+                }
+                button {
+                    class: "update-banner-link",
+                    onclick: move |_| {
+                        telemetry::set_consent(true);
+                        ask_consent.set(false);
+                    },
+                    "OK"
+                }
+                button {
+                    class: "update-banner-link",
+                    onclick: move |_| {
+                        telemetry::set_consent(false);
+                        ask_consent.set(false);
+                    },
+                    "Turn off"
                 }
             }
         }
