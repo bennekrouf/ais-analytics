@@ -7,7 +7,7 @@
 #endif
 
 #define MyAppName      "AIS Analytics"
-#define MyAppPublisher "Bennekrouf"
+#define MyAppPublisher "Mayorana"
 #define MyAppURL       "https://github.com/bennekrouf/ais-analytics"
 #define MyAppExeName   "ais-analytics.exe"
 
@@ -59,6 +59,8 @@ CloseApplications=yes
 SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\icon.ico
 #endif
+; Shows the licence (PolyForm Noncommercial) as a page the user accepts before installing.
+LicenseFile=..\LICENSE
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
