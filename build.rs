@@ -26,8 +26,8 @@ fn main() {
         res.set_icon("assets/icon.ico");
         res.set("FileDescription", "AIS Analytics");
         res.set("ProductName", "AIS Analytics");
-        res.set("CompanyName", "Bennekrouf");
-        res.set("LegalCopyright", "© Bennekrouf");
+        res.set("CompanyName", "Mayorana");
+        res.set("LegalCopyright", "© 2026 Mayorana");
         if let Err(e) = res.compile() {
             println!(
                 "cargo:warning=Failed to embed Windows icon resource: {} \
