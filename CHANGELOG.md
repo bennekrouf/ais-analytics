@@ -15,6 +15,14 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Changed
+
+- The company name and copyright information have been updated to reflect the
+  new ownership. This change affects the application's metadata and installer
+  files.
+
 ## [0.1.35] - 2026-10-06
 
 ### Added
