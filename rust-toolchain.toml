@@ -1,0 +1,13 @@
+# Pin the toolchain so every build of AIS Analytics uses one compiler.
+#
+# Cargo keys every artifact by rustc version, and a version change re-hashes
+# the whole graph while nothing ever collects the old artifacts. The host has
+# four toolchains installed (1.97.1, 1.98.1, 1.99, nightly); only one has ever
+# built this checkout, and the pin is what keeps that true.
+#
+# `stable` and these components match dtolnay/rust-toolchain@stable in
+# .github/workflows. Cross-target builds pass --target explicitly, so the
+# targets are not listed here.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

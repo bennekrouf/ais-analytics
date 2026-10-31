@@ -316,6 +316,12 @@ jobs:
           MAYORANA_TELEMETRY_URL: ${{ vars.MAYORANA_TELEMETRY_URL }}
         run: cargo build --release
 
+      # The app must start on a PC without the Visual C++ Redistributable, so the
+      # .exe may not import VCRUNTIME140*.dll (see .cargo/config.toml).
+      - name: Check static C runtime
+        shell: pwsh
+        run: ./scripts/check-windows-crt.ps1 target\release\ais-analytics.exe
+
       - name: Copy WebView2Loader.dll
         shell: pwsh
         run: |
