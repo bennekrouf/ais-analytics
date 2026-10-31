@@ -31,3 +31,26 @@ getrandom = "0.3"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+
+# ── Debug build size ─────────────────────────────────────────────────────────
+# target/ had grown to 10 GB, and almost none of it was the dependencies: the
+# 353 dependency rlibs came to 0.77 GB, while this crate's own object files
+# came to 3.99 GB across 29,864 files and target/debug/incremental to 5.7 GB.
+# `rsx!` expands into deeply nested generic component trees, so with the stock
+# `debug = true` every instantiation carries full DWARF.
+#
+# An application crate is hashed over its whole dependency graph, so each
+# dependency change mints a fresh generation of *this* crate's objects — 39
+# Cargo.lock changes had left 59 of them — and Cargo never collects any of it.
+# Line tables keep file:line in panic backtraces, which is the part we read;
+# the dependencies get no debuginfo at all. Set `debug = 2` here temporarily
+# when you need a real debugger over dependency frames.
+#
+# target/debug/incremental is never pruned either, so clear it when it grows:
+# `rm -rf target/debug/incremental`, or `cargo sweep --time 15` for the stale
+# generations alongside it.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
