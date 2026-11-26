@@ -1,13 +1,16 @@
-# Pin the toolchain so every build of AIS Analytics uses one compiler.
+# The Rust version for every build of AIS Analytics: local, CI and releases. rustup
+# installs it on first use.
 #
-# Cargo keys every artifact by rustc version, and a version change re-hashes
-# the whole graph while nothing ever collects the old artifacts. The host has
-# four toolchains installed (1.97.1, 1.98.1, 1.99, nightly); only one has ever
-# built this checkout, and the pin is what keeps that true.
+# A number, not `stable`. Floating on stable is what broke the Windows release
+# when Rust 1.100 came out: the build ran on a compiler nobody had tried, and
+# the step that picks WebView2Loader.dll out of the build output found nothing.
+# Each stable release also brings new clippy lints, which CI denies.
 #
-# `stable` and these components match dtolnay/rust-toolchain@stable in
-# .github/workflows. Cross-target builds pass --target explicitly, so the
-# targets are not listed here.
+# The same version as every mayorana desktop app, and as the
+# dtolnay/rust-toolchain@1.99 steps in .github/workflows. Bump them together,
+# on purpose, and fix whatever the new compiler and clippy report in the same
+# change. Cross-target builds pass --target explicitly, so the targets are not
+# listed here.
 [toolchain]
-channel = "stable"
+channel = "1.99"
 components = ["rustfmt", "clippy"]
