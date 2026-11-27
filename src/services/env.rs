@@ -149,34 +149,59 @@ mod tests {
         vec!["/opt/homebrew/bin".to_string(), "/usr/bin".to_string()]
     }
 
+    /// Writes a test `PATH` with this platform's separator: the literals
+    /// below use `:`, and Windows separates with `;`.
+    fn path(list: &str) -> String {
+        if cfg!(windows) {
+            list.replace(':', ";")
+        } else {
+            list.to_string()
+        }
+    }
+
+    /// The merged `PATH`'s entries, split the way the platform splits it.
+    fn entries(merged: &str) -> Vec<String> {
+        std::env::split_paths(merged)
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect()
+    }
+
     #[test]
     fn a_bundles_bare_path_gains_the_places_tools_actually_live() {
         // The exact failure: az is in /opt/homebrew/bin, the bundle sees neither.
-        let merged = merge_paths("/usr/bin:/bin", None, &extras());
-        assert!(merged.split(':').any(|p| p == "/opt/homebrew/bin"));
+        let merged = merge_paths(&path("/usr/bin:/bin"), None, &extras());
+        assert!(entries(&merged).iter().any(|p| p == "/opt/homebrew/bin"));
     }
 
     #[test]
     fn the_login_shell_is_believed_before_anything_else() {
-        let merged = merge_paths("/usr/bin", Some("/opt/homebrew/bin:/usr/bin"), &extras());
+        let merged = merge_paths(
+            "/usr/bin",
+            Some(&path("/opt/homebrew/bin:/usr/bin")),
+            &extras(),
+        );
         assert!(merged.starts_with("/opt/homebrew/bin"));
     }
 
     #[test]
     fn a_directory_never_appears_twice() {
         let merged = merge_paths(
-            "/usr/bin:/bin",
-            Some("/usr/bin:/opt/homebrew/bin"),
+            &path("/usr/bin:/bin"),
+            Some(&path("/usr/bin:/opt/homebrew/bin")),
             &extras(),
         );
-        let count = merged.split(':').filter(|p| *p == "/usr/bin").count();
+        let count = entries(&merged).iter().filter(|p| *p == "/usr/bin").count();
         assert_eq!(count, 1, "got {merged}");
     }
 
     #[test]
     fn order_decides_which_copy_of_a_tool_wins() {
-        let merged = merge_paths("/usr/bin", Some("/opt/homebrew/bin:/usr/bin"), &extras());
-        let entries: Vec<&str> = merged.split(':').collect();
+        let merged = merge_paths(
+            "/usr/bin",
+            Some(&path("/opt/homebrew/bin:/usr/bin")),
+            &extras(),
+        );
+        let entries = entries(&merged);
         let brew = entries
             .iter()
             .position(|p| *p == "/opt/homebrew/bin")
@@ -187,14 +212,14 @@ mod tests {
 
     #[test]
     fn empty_and_ragged_input_does_not_produce_empty_entries() {
-        let merged = merge_paths("::/usr/bin: :", Some(""), &extras());
-        assert!(!merged.split(':').any(|p| p.trim().is_empty()));
+        let merged = merge_paths(&path("::/usr/bin: :"), Some(""), &extras());
+        assert!(!entries(&merged).iter().any(|p| p.trim().is_empty()));
     }
 
     #[test]
     fn nothing_at_all_still_yields_a_usable_path() {
         let merged = merge_paths("", None, &extras());
-        assert!(merged.split(':').any(|p| p == "/usr/bin"));
+        assert!(entries(&merged).iter().any(|p| p == "/usr/bin"));
     }
 
     /// `extras` entries are whole directories. The old code joined them into
