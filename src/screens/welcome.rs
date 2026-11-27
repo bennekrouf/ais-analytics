@@ -153,6 +153,8 @@ pub fn Welcome(props: WelcomeProps) -> Element {
 
     rsx! {
         div { class: "welcome",
+            // Top right, out of the way of the workspace picker.
+            div { class: "welcome-corner", crate::McpButton { class: "btn" } }
             div { class: "welcome-card",
                 h1 { "AIS Analytics" }
                 p { class: "subtitle", "Azure Log Analytics — correlation-key flow explorer" }

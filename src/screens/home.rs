@@ -700,6 +700,8 @@ pub fn Home(props: HomeProps) -> Element {
                 "↻ Rescan"
             }
 
+            crate::McpButton { class: "btn" }
+
             // Far right, after Rescan. The glyph shows what you'd switch *to*,
             // not what you're in.
             button {
